@@ -43,6 +43,7 @@ pub mod personas;
 pub mod plan;
 pub mod plugin;
 pub mod privacy;
+pub mod provider;
 pub mod queue;
 pub mod recap;
 pub mod release_notes;
@@ -128,6 +129,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(toggle_mouse_reporting::ToggleMouseReportingCommand),
         Arc::new(settings_cmd::SettingsCommand),
         Arc::new(privacy::PrivacyCommand),
+        Arc::new(provider::ProviderCommand),
         Arc::new(rewind::RewindCommand),
         Arc::new(jump::JumpCommand),
         Arc::new(login::LoginCommand),
@@ -231,6 +233,22 @@ mod tests {
         ]));
         assert!(reg.get("loop").is_some());
     }
+
+    #[test]
+    fn provider_command_is_builtin_and_opens_setup_wizard() {
+        let reg = CommandRegistry::new(builtin_commands());
+        let provider = reg
+            .get("provider")
+            .expect("/provider should be registered as a builtin command");
+        let models = ModelState::default();
+        let mut ctx = make_ctx(&models);
+        let result = provider.run(&mut ctx, "");
+        assert!(matches!(
+            result,
+            CommandResult::Action(Action::OpenSetupWizard)
+        ));
+    }
+
     #[test]
     fn builtin_registry_lookup_by_alias() {
         let reg = CommandRegistry::new(builtin_commands());

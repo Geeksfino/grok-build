@@ -25,6 +25,8 @@ use crate::app::actions::Action;
 use crate::app::app_view::{AppView, AuthState};
 use crate::theme::Theme;
 
+pub const FORCE_PROVIDER_SETUP_ENV: &str = "GROK_FORCE_PROVIDER_SETUP";
+
 pub struct SetupWizardCompletion {
     pub connection: Option<crate::acp::AcpConnection>,
     pub post_setup_notice: Option<String>,
@@ -58,6 +60,11 @@ pub fn cold_start_needs_provider_setup(
     force_login: bool,
 ) -> bool {
     auth_methods.is_empty() && !force_login
+}
+
+pub fn login_shim_message() -> &'static str {
+    "grok login is disabled in this build. Run `grok provider` to configure an LLM, \
+or add a [model.*] entry in ~/.grok/config.toml. See: grok provider --help"
 }
 
 pub fn handle_setup_wizard_input(
@@ -586,6 +593,19 @@ mod tests {
     #[test]
     fn force_login_disables_provider_setup_gate() {
         assert!(!cold_start_needs_provider_setup(&[], true));
+    }
+
+    #[test]
+    fn login_shim_message_points_at_grok_provider_not_xai_account_login() {
+        let message = login_shim_message();
+        assert!(
+            message.contains("grok provider"),
+            "shim must direct users to provider setup: {message}"
+        );
+        assert!(
+            !message.contains("accounts.x.ai"),
+            "shim must stay provider-neutral: {message}"
+        );
     }
 
     #[tokio::test]

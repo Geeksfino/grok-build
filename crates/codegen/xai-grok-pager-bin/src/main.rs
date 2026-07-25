@@ -1720,6 +1720,12 @@ async fn async_main() -> Result<()> {
         args.cwd.as_deref(),
     );
     flag_dashboard_at_startup_if_requested(&mut args)?;
+    if matches!(args.command, Some(Command::Provider)) {
+        unsafe {
+            std::env::set_var(xai_grok_pager::setup_wizard::FORCE_PROVIDER_SETUP_ENV, "1")
+        };
+        args.command = None;
+    }
     let is_interactive = args.command.is_none()
         && args.single.is_none()
         && args.prompt_json.is_none()
@@ -1879,19 +1885,14 @@ async fn async_main() -> Result<()> {
             }
             Command::Login {
                 legacy: _,
-                oauth,
-                device_auth,
-                devbox,
+                oauth: _,
+                device_auth: _,
+                devbox: _,
             } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                xai_grok_shell::auth::run_cli_login(&config, oauth, device_auth, devbox).await?;
-                println!();
-                xai_grok_shell::instrumentation::finalize_and_exit(0);
+                eprintln!("{}", xai_grok_pager::setup_wizard::login_shim_message());
+                xai_grok_shell::instrumentation::finalize_and_exit(1);
             }
             Command::Logout => {
                 init_tracing_simple("cli");
@@ -1913,6 +1914,9 @@ async fn async_main() -> Result<()> {
                 args.command = Some(Command::Dashboard);
                 flag_dashboard_at_startup_if_requested(&mut args)?;
             }
+            Command::Provider => unreachable!(
+                "provider command should be normalized into interactive startup before dispatch"
+            ),
         }
     }
     let headless_prompt = xai_grok_pager::headless::HeadlessPrompt::from_args(

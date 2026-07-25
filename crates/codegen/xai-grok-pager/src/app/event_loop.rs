@@ -635,15 +635,23 @@ pub(crate) async fn run(
     app.auth_methods = connection.auth_methods.clone();
 
     // Seed auth state from ACP connection metadata.
+    // `grok provider` sets this env var so startup reuses the existing wizard path.
+    let force_provider_setup = std::env::var(crate::setup_wizard::FORCE_PROVIDER_SETUP_ENV)
+        .ok()
+        .is_some_and(|value| !matches!(value.trim(), "" | "0" | "false" | "FALSE" | "False"));
     // --force-login overrides: show the login screen even when credentials exist.
-    let force_login = args.force_login && !connection.auth_methods.is_empty();
-    let needs_provider_setup =
-        crate::setup_wizard::cold_start_needs_provider_setup(&connection.auth_methods, force_login);
+    let force_login = args.force_login && !force_provider_setup && !connection.auth_methods.is_empty();
+    let needs_provider_setup = force_provider_setup
+        || crate::setup_wizard::cold_start_needs_provider_setup(
+            &connection.auth_methods,
+            force_login,
+        );
     let needs_interactive_login = !needs_provider_setup && (connection.needs_login || force_login);
     if needs_provider_setup {
         app.welcome_prompt_focused = false;
         app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
         tracing::info!(
+            force_requested = force_provider_setup,
             methods_empty = connection.auth_methods.is_empty(),
             "auto-opening provider setup at startup"
         );

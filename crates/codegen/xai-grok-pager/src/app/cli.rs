@@ -42,6 +42,8 @@ pub enum Command {
         #[arg(skip)]
         devbox: bool,
     },
+    /// Configure an LLM provider interactively
+    Provider,
     /// Manage MCP server configurations
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
@@ -1230,5 +1232,11 @@ mod tests {
             panic!("expected agent subcommand");
         };
         assert_eq!(agent.reasoning_effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn provider_subcommand_parses() {
+        let args = PagerArgs::try_parse_from(["grok", "provider"]).expect("provider parses");
+        assert!(matches!(args.command, Some(Command::Provider)));
     }
 }
