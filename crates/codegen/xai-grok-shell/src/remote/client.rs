@@ -560,6 +560,10 @@ pub fn fetch_settings_blocking(
     auth: &GrokAuth,
     alpha_test_key: Option<&str>,
 ) -> Option<crate::util::config::RemoteSettings> {
+    if cli_chat_proxy_base_url.trim().is_empty() {
+        tracing::debug!("settings fetch skipped: empty cli-chat-proxy URL");
+        return None;
+    }
     let client = crate::http::shared_blocking_client();
     let url = format!("{}/settings", cli_chat_proxy_base_url);
     for attempt in 0u64..3 {
@@ -613,6 +617,10 @@ struct LoginConfigResponse {
 /// loopback default. Caps at 1.5s with no retries since it's on the login path;
 /// `agent_id()` runs on the blocking pool so the fetch never stalls the executor.
 pub async fn fetch_login_device_flow(cli_chat_proxy_base_url: &str) -> Option<bool> {
+    if cli_chat_proxy_base_url.trim().is_empty() {
+        tracing::debug!("login-config fetch skipped: empty cli-chat-proxy URL");
+        return None;
+    }
     let agent_id = tokio::task::spawn_blocking(xai_grok_telemetry::id::agent_id)
         .await
         .ok()?;

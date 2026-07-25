@@ -320,6 +320,10 @@ async fn fetch_managed_config_once(
     token: &str,
     source: ManagedConfigSource,
 ) -> Result<ManagedConfigResponse, ManagedConfigError> {
+    if url.trim().is_empty() {
+        tracing::debug!("managed config fetch skipped: no managed-config URL configured");
+        return Ok(ManagedConfigResponse::default());
+    }
     let resp = match client
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
@@ -530,6 +534,10 @@ async fn fetch_for_principal(
     // are honored and the bearer isn't sent to the public default.
     let url =
         crate::agent::config::EndpointsConfig::from_effective_config().resolve_managed_config_url();
+    if url.is_empty() {
+        tracing::debug!("managed config fetch skipped: no managed-config URL/proxy configured");
+        return Ok(FetchedConfig::NoPrincipal);
+    }
 
     let team_auth = team_override.or_else(read_active_team_auth);
 

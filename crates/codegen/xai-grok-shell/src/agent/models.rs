@@ -1426,9 +1426,13 @@ pub(crate) fn prefetch_models_and_settings_blocking(
     // Settings need a grok.com session; skip for BYOK.
     let settings = match auth {
         Some(auth) if remote_fetch_enabled => {
+            let Some(proxy_url) = startup_settings_url(endpoints) else {
+                tracing::info!("settings fetch skipped: no cli-chat-proxy configured");
+                return (models, None);
+            };
             let _timer = crate::instrumentation_timer!("startup.early_settings_fetch");
             crate::remote::fetch_settings_blocking(
-                &endpoints.proxy_url(),
+                &proxy_url,
                 auth,
                 endpoints.alpha_test_key.as_deref(),
             )
@@ -1436,6 +1440,19 @@ pub(crate) fn prefetch_models_and_settings_blocking(
         _ => None,
     };
     (models, settings)
+}
+
+fn startup_models_list_url(
+    endpoints: &config::EndpointsConfig,
+    _fetch_auth: ModelFetchAuth,
+) -> Option<String> {
+    let url = endpoints.resolve_models_list_url();
+    (!url.is_empty()).then_some(url)
+}
+
+fn startup_settings_url(endpoints: &config::EndpointsConfig) -> Option<String> {
+    let url = endpoints.proxy_url();
+    (!url.is_empty()).then_some(url)
 }
 
 /// `remote_fetch_enabled` is a parameter so the pair helper above resolves the
@@ -1447,8 +1464,14 @@ fn prefetch_models_blocking_gated(
     remote_fetch_enabled: bool,
 ) -> Option<IndexMap<String, ModelEntry>> {
     let cache_auth = fetch_auth.cache_auth_method();
+    // Startup prefetch only talks to explicit models endpoints or the proxy;
+    // if neither is configured, stay idle rather than falling through to the
+    // API base URL.
+    let Some(cache_origin) = startup_models_list_url(endpoints, fetch_auth) else {
+        tracing::info!("models fetch skipped: no proxy/models endpoint configured");
+        return None;
+    };
     // Same URL the fetch below will hit — the cache is only valid for it.
-    let cache_origin = crate::remote::models_list_url(endpoints, fetch_auth);
     let cache = ModelsCacheManager::new();
     if let Some(cached) = cache.load_fresh(&cache_auth, &cache_origin) {
         return Some(cached.models);
@@ -3252,6 +3275,45 @@ mod tests {
             resolve_prefetch_env_from_parts(None, config::EndpointsConfig::default(), true)
                 .is_none(),
             "no credentials and no custom endpoint must stay a no-prefetch launch",
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn startup_prefetch_urls_skip_empty_proxy_but_keep_explicit_models_endpoints() {
+        let _proxy = EnvGuard::unset("GROK_CLI_CHAT_PROXY_BASE_URL");
+        let _models_base = EnvGuard::unset("GROK_MODELS_BASE_URL");
+        let _models_list = EnvGuard::unset("GROK_MODELS_LIST_URL");
+
+        let default_endpoints = config::EndpointsConfig::default();
+        assert_eq!(
+            startup_models_list_url(&default_endpoints, ModelFetchAuth::Session),
+            None
+        );
+        assert_eq!(
+            startup_models_list_url(&default_endpoints, ModelFetchAuth::ApiKey),
+            None,
+            "an ambient API key alone must not re-arm startup model prefetch"
+        );
+        assert_eq!(startup_settings_url(&default_endpoints), None);
+
+        let custom_base = config::EndpointsConfig {
+            models_base_url: Some("https://models.example.test/v1".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
+        assert_eq!(
+            startup_models_list_url(&custom_base, ModelFetchAuth::Session),
+            Some("https://models.example.test/v1/models".to_owned())
+        );
+        assert_eq!(startup_settings_url(&custom_base), None);
+
+        let explicit_list = config::EndpointsConfig {
+            models_list_url: Some("https://catalog.example.test/v1/models".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
+        assert_eq!(
+            startup_models_list_url(&explicit_list, ModelFetchAuth::Session),
+            Some("https://catalog.example.test/v1/models".to_owned())
         );
     }
 

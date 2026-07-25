@@ -1,4 +1,6 @@
 use super::*;
+use serial_test::serial;
+use xai_grok_test_support::EnvGuard;
 
 /// Fail closed only for a managed principal AND compromised policy; every other combination proceeds.
 #[test]
@@ -342,6 +344,29 @@ fn marker_is_not_a_managed_artifact() {
         ],
         "the artifact list is load-bearing for every derived loop; change it deliberately"
     );
+}
+
+/// When no managed-config endpoint is configured, the principal fetch is a pure
+/// no-op: no HTTP is attempted and the shell reports an empty result.
+#[tokio::test]
+#[serial]
+async fn fetch_for_principal_skips_when_managed_config_url_unset() {
+    let _proxy = EnvGuard::unset("GROK_CLI_CHAT_PROXY_BASE_URL");
+    let _managed = EnvGuard::unset("GROK_MANAGED_CONFIG_URL");
+    let _dk = EnvGuard::set("GROK_DEPLOYMENT_KEY", "deploy-key-under-test");
+
+    let fetched = fetch_for_principal(SyncBudget::Standard, Some(GrokAuth::test_default()))
+        .await
+        .expect("empty proxy/managed URL should skip managed-config fetches");
+    assert!(matches!(fetched, FetchedConfig::NoPrincipal));
+
+    let report = fetch_setup_report()
+        .await
+        .expect("setup report should stay empty when proxy is unset");
+    assert_eq!(report.source, None);
+    assert!(!report.configured);
+    assert_eq!(report.managed_config, None);
+    assert_eq!(report.requirements, None);
 }
 
 /// Error prefixes re-arm the detector like crash prefixes: when an artifact removal
