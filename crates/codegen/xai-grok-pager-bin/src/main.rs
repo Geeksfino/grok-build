@@ -152,25 +152,7 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
 async fn run_setup_command(json: bool) {
     use xai_grok_shell::managed_config::{self, SetupOutcome};
     if !managed_config::has_principal() {
-        eprintln!("No deployment key or team sign-in found.");
-        eprintln!();
-        eprintln!("To install managed configuration, set a deployment key:");
-        eprintln!();
-        if cfg!(unix) {
-            eprintln!("  export GROK_DEPLOYMENT_KEY=<your-key>");
-        } else {
-            eprintln!("  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\"");
-        }
-        eprintln!("  grok setup");
-        eprintln!();
-        eprintln!("Or add the key to ~/.grok/config.toml:");
-        eprintln!();
-        eprintln!("  [endpoints]");
-        eprintln!("  deployment_key = \"<your-key>\"");
-        eprintln!();
-        eprintln!(
-            "If you don't have a deployment key, contact your organization's Grok administrator."
-        );
+        eprintln!("{}", setup_missing_principal_message());
         std::process::exit(1);
     }
     if json {
@@ -374,6 +356,38 @@ enum WorkspaceGate {
     Disabled,
     Unknown,
 }
+
+fn setup_missing_principal_message() -> String {
+    let deployment_key_export = if cfg!(unix) {
+        "  export GROK_DEPLOYMENT_KEY=<your-key>"
+    } else {
+        "  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\""
+    };
+    format!(
+        "No deployment key or team sign-in found.\n\n\
+         `grok setup` needs a first-party principal: either a deployment key or an existing team sign-in.\n\n\
+         To use a deployment key:\n\n\
+         {deployment_key_export}\n\
+           grok setup\n\n\
+         Or add the key to ~/.grok/config.toml:\n\n\
+           [endpoints]\n\
+           deployment_key = \"<your-key>\"\n\n\
+         If your organization uses team auth instead, rerun `grok setup` from a shell that already has a valid team sign-in.\n\
+         If you need a deployment key, contact your organization's Grok administrator."
+    )
+}
+
+fn workspace_gate_unknown_message() -> &'static str {
+    "Could not load your settings for `grok workspace`. Check your network connection. \
+     `grok workspace` and other remote features in this provider-neutral build require a deployment key \
+     and may be unavailable without one. Review ~/.grok/config.toml and try again."
+}
+
+fn workspace_missing_credentials_message() -> &'static str {
+    "No cached deployment credentials found. `grok workspace` and other remote features in this \
+     provider-neutral build require a deployment key and may be unavailable without one. Set \
+     `GROK_DEPLOYMENT_KEY` or `endpoints.deployment_key` and try again."
+}
 /// The `GROK_WORKSPACE_COMMAND` override, if set (`Some(true)`/`Some(false)`);
 /// `None` defers to the remote settings flag.
 fn workspace_command_env_override() -> Option<bool> {
@@ -428,11 +442,7 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
             )
         }
         WorkspaceGate::Unknown => {
-            anyhow::bail!(
-                "Could not load your settings for `grok workspace`. Check your \
-             network connection, then run `grok provider` or review \
-             ~/.grok/config.toml and try again."
-            )
+            anyhow::bail!(workspace_gate_unknown_message())
         }
     }
     match args.command {
@@ -533,7 +543,7 @@ async fn workspace_start(
     ensure_authenticated(
         &agent_config.grok_com_config,
         false,
-        Some("No cached credentials found. Run `grok provider` or add credentials in ~/.grok/config.toml."),
+        Some(workspace_missing_credentials_message()),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
@@ -2566,6 +2576,60 @@ mod tests {
         unsafe { std::env::set_var("GROK_WORKSPACE_COMMAND", "off") };
         assert_eq!(workspace_command_env_override(), Some(false));
         unsafe { std::env::remove_var("GROK_WORKSPACE_COMMAND") };
+    }
+    #[test]
+    fn workspace_messages_do_not_point_first_party_failures_at_provider_setup() {
+        let gate = workspace_gate_unknown_message();
+        assert!(
+            gate.contains("deployment key"),
+            "workspace gate should mention deployment-key access: {gate}"
+        );
+        assert!(
+            gate.contains("provider-neutral build"),
+            "workspace gate should explain provider-neutral availability: {gate}"
+        );
+        assert!(
+            !gate.contains("grok provider"),
+            "workspace gate must not point to provider setup: {gate}"
+        );
+        assert!(
+            !gate.contains("grok login"),
+            "workspace gate must not point to login in this build: {gate}"
+        );
+
+        let auth = workspace_missing_credentials_message();
+        assert!(
+            auth.contains("deployment key"),
+            "workspace auth failure should mention deployment-key access: {auth}"
+        );
+        assert!(
+            auth.contains("provider-neutral build"),
+            "workspace auth failure should explain provider-neutral availability: {auth}"
+        );
+        assert!(
+            !auth.contains("grok provider"),
+            "workspace auth failure must not point to provider setup: {auth}"
+        );
+        assert!(
+            !auth.contains("grok login"),
+            "workspace auth failure must not point to login in this build: {auth}"
+        );
+    }
+    #[test]
+    fn setup_missing_principal_message_mentions_team_sign_in_and_deployment_key() {
+        let message = setup_missing_principal_message();
+        assert!(
+            message.contains("team sign-in"),
+            "setup guidance should keep team-auth remediation: {message}"
+        );
+        assert!(
+            message.contains("deployment key"),
+            "setup guidance should keep deployment-key remediation: {message}"
+        );
+        assert!(
+            !message.contains("grok provider"),
+            "setup guidance must not point to provider setup: {message}"
+        );
     }
     fn make_state() -> std::sync::Mutex<StdioReplayState> {
         std::sync::Mutex::new(StdioReplayState::default())

@@ -426,11 +426,7 @@ async fn run_upload(
                 session_id = %session_id,
                 "trace_cmd: no upload credentials available"
             );
-            anyhow::bail!(
-                "No upload credentials. Run `grok provider` or set a deployment key \
-                 in ~/.grok/config.toml. See {} for upload overrides.",
-                crate::util::display_user_grok_path("docs/user-guide")
-            );
+            anyhow::bail!(missing_upload_credentials_message());
         }
     };
 
@@ -660,4 +656,33 @@ pub async fn resolve_upload_method(agent_config: &AgentConfig) -> Option<UploadM
         tracing::warn!("trace_cmd: no upload method available");
     }
     method
+}
+
+fn missing_upload_credentials_message() -> String {
+    format!(
+        "No upload credentials. Trace upload requires a deployment key or explicit upload endpoint/auth configuration in ~/.grok/config.toml. See {} for upload overrides.",
+        crate::util::display_user_grok_path("docs/user-guide")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_upload_credentials_message_requires_first_party_upload_config() {
+        let message = missing_upload_credentials_message();
+        assert!(
+            message.contains("deployment key"),
+            "upload guidance should mention deployment-key auth: {message}"
+        );
+        assert!(
+            message.contains("upload endpoint"),
+            "upload guidance should mention explicit upload configuration: {message}"
+        );
+        assert!(
+            !message.contains("grok provider"),
+            "upload guidance must not point to provider setup: {message}"
+        );
+    }
 }
