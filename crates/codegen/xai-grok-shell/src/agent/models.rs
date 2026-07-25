@@ -2990,6 +2990,41 @@ mod tests {
 
         assert!(!mgr.models().contains_key("grok-legacy"));
     }
+    #[test]
+    fn load_fresh_accepts_legacy_cache_without_auth_not_required() {
+        let mgr = test_manager();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let auth_method = mgr.inner.fetch_auth.read().cache_auth_method();
+        let legacy = ModelsCache {
+            fetched_at: Utc::now(),
+            grok_version: Some(xai_grok_version::VERSION.to_string()),
+            auth_method: Some(auth_method.clone()),
+            origin: Some(mgr.cache_origin()),
+            etag: Some("etag-legacy-auth".into()),
+            models: make_prefetched(&["grok-legacy-auth"]),
+        };
+        let mut raw = serde_json::to_value(&legacy).expect("cache serializes");
+        raw["models"]["grok-legacy-auth"]
+            .as_object_mut()
+            .expect("model entry is an object")
+            .remove("auth_not_required");
+        std::fs::write(
+            &cache.path,
+            serde_json::to_vec_pretty(&raw).expect("cache JSON serializes"),
+        )
+        .expect("legacy cache JSON writes");
+
+        let loaded = cache
+            .load_fresh(&auth_method, &mgr.cache_origin())
+            .expect("legacy cache should still load");
+
+        assert!(loaded.models.contains_key("grok-legacy-auth"));
+        assert!(
+            !loaded.models["grok-legacy-auth"].auth_not_required,
+            "missing auth_not_required should deserialize to false for legacy caches"
+        );
+    }
 
     // ── clear() resets has_fetched_real_catalog ──────────────────────
 

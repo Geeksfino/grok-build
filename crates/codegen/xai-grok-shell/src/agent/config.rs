@@ -3725,7 +3725,11 @@ impl ConfigModelOverride {
         if self.api_base_url.is_some() {
             entry.api_base_url.clone_from(&self.api_base_url);
         }
-        if self.supported_in_api.is_none() && (self.api_key.is_some() || self.env_key.is_some()) {
+        if self.supported_in_api.is_none()
+            && (self.api_key.is_some()
+                || self.env_key.is_some()
+                || self.auth_not_required == Some(true))
+        {
             entry.info.supported_in_api = true;
         }
         entry
@@ -3912,6 +3916,7 @@ pub struct ModelEntry {
     pub api_key: Option<String>,
     pub env_key: Option<EnvKeys>,
     /// When true, requests may proceed without any Authorization header.
+    #[serde(default)]
     pub auth_not_required: bool,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
@@ -6090,6 +6095,23 @@ reasoning_effort = "low"
         }
         .apply("llama3", Some(base), &endpoints);
         assert!(!disabled.auth_not_required);
+    }
+    #[test]
+    fn auth_not_required_promotes_supported_in_api_when_not_explicitly_set() {
+        let endpoints = EndpointsConfig::default();
+        let mut base = ModelEntry::fallback("llama3", &endpoints);
+        base.info.supported_in_api = false;
+
+        let enabled = ConfigModelOverride {
+            auth_not_required: Some(true),
+            ..Default::default()
+        }
+        .apply("llama3", Some(base), &endpoints);
+
+        assert!(
+            enabled.info.supported_in_api,
+            "auth_not_required should make the model visible to API-key users unless explicitly overridden"
+        );
     }
     /// The `ConfigUnavailable → Unknown` arm matters for safety: a transient
     /// config failure must not read as a definite `NotByok`, which would drive
