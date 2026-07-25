@@ -3426,6 +3426,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 max_retries: None,
                 api_key: None,
                 env_key: None,
+                auth_not_required: false,
                 extra_headers: IndexMap::new(),
                 use_concise: false,
                 hidden: m.hidden,
@@ -3474,6 +3475,9 @@ pub struct ModelEntryConfig {
     /// If not set, falls back to XAI_API_KEY.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_key: Option<EnvKeys>,
+    /// When true, the model is usable without api_key/env_key (e.g. local Ollama).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auth_not_required: bool,
     /// Which API backend to use for this model.
     /// Values: "chat_completions" (default), "responses"
     #[serde(default)]
@@ -3588,6 +3592,7 @@ pub struct ConfigModelOverride {
     pub api_key: Option<String>,
     /// Env var name(s) for the provider key — string or array in config.toml.
     pub env_key: Option<EnvKeys>,
+    pub auth_not_required: Option<bool>,
     pub api_base_url: Option<String>,
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
@@ -3713,6 +3718,9 @@ impl ConfigModelOverride {
         }
         if self.env_key.is_some() {
             entry.env_key.clone_from(&self.env_key);
+        }
+        if let Some(v) = self.auth_not_required {
+            entry.auth_not_required = v;
         }
         if self.api_base_url.is_some() {
             entry.api_base_url.clone_from(&self.api_base_url);
@@ -3903,6 +3911,8 @@ pub struct ModelEntry {
     pub info: ModelInfo,
     pub api_key: Option<String>,
     pub env_key: Option<EnvKeys>,
+    /// When true, requests may proceed without any Authorization header.
+    pub auth_not_required: bool,
     /// When set, `base_url` is used for session auth, `api_base_url` for API-key auth.
     pub api_base_url: Option<String>,
 }
@@ -3915,6 +3925,7 @@ impl ModelEntry {
             info,
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         }
     }
@@ -3926,6 +3937,7 @@ impl ModelEntry {
             info: ModelInfo::from_config(entry),
             api_key: entry.api_key.clone(),
             env_key: entry.env_key.clone(),
+            auth_not_required: entry.auth_not_required,
             api_base_url: entry.api_base_url.clone(),
         }
     }
@@ -3935,11 +3947,12 @@ impl ModelEntry {
     fn own_credential(&self) -> Option<String> {
         first_own_credential(self.api_key.as_deref(), self.env_key.as_ref())
     }
-    /// `true` when the model has a non-empty `api_key` or an `env_key` that
-    /// resolves to a non-empty value.
+    /// `true` when the model can authenticate on its own: either a non-empty
+    /// `api_key`, an `env_key` that resolves to a non-empty value, or an
+    /// explicitly open endpoint that does not require auth.
     /// Probes `std::env::var` at call time — result is not stable across env changes.
     pub fn has_own_credentials(&self) -> bool {
-        self.own_credential().is_some()
+        self.auth_not_required || self.own_credential().is_some()
     }
 }
 impl std::ops::Deref for ModelEntry {
@@ -4312,7 +4325,7 @@ pub(crate) fn first_own_credential(
         .or_else(|| env_key.and_then(EnvKeys::resolve_value))
 }
 /// Resolve credentials for a model.
-/// Priority: model api_key/env_key > session token > XAI_API_KEY.
+/// Priority: model api_key/env_key > open/no-auth endpoint > session token > XAI_API_KEY.
 ///
 /// When `env_key` lists multiple names, the first set non-empty value is used.
 pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> ResolvedCredentials {
@@ -4320,6 +4333,12 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
     let (api_key, base_url, auth_type) = if let Some(key) = model.own_credential() {
         (
             Some(key),
+            info.base_url.clone(),
+            xai_chat_state::AuthType::ApiKey,
+        )
+    } else if model.auth_not_required {
+        (
+            None,
             info.base_url.clone(),
             xai_chat_state::AuthType::ApiKey,
         )
@@ -4504,7 +4523,7 @@ pub fn resolve_aux_model_sampling_config(
             None,
             None,
         );
-        if sampler.api_key.is_some() {
+        if sampler.api_key.is_some() || entry.auth_not_required {
             return Some(sampler);
         }
     }
@@ -4550,6 +4569,7 @@ pub fn resolve_aux_model_sampling_config(
             },
             api_key: Some(bearer),
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -4773,6 +4793,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         },
         api_key: None,
         env_key: None,
+        auth_not_required: false,
         api_base_url: None,
     };
     let credentials = resolve_credentials_enforced(&entry, session_key, disable_api_key_auth);
@@ -5338,6 +5359,34 @@ reasoning_effort = "low"
         assert_eq!(resolved.api_key.as_deref(), Some("vendor-key"));
     }
     #[test]
+    fn aux_model_auth_not_required_resolves_without_borrowing_auth() {
+        let endpoints = EndpointsConfig::default();
+        let mut catalog = IndexMap::new();
+        let mut entry = test_model_entry("llama3", "http://localhost:11434/v1", None, None, None);
+        entry.auth_not_required = true;
+        catalog.insert("ollama".to_string(), entry);
+
+        let resolved = resolve_aux_model_sampling_config(
+            "ollama",
+            &catalog,
+            &endpoints,
+            Some("session-token"),
+            false,
+            None,
+            None,
+        )
+        .expect("open aux model should resolve without a key");
+        assert_eq!(resolved.model, "llama3");
+        assert_eq!(resolved.base_url, "http://localhost:11434/v1");
+        assert_eq!(
+            resolved.api_key, None,
+            "open aux model must not inherit xAI session credentials"
+        );
+
+        let client = xai_grok_sampler::SamplingClient::new(resolved).expect("client should build");
+        assert_eq!(client.auth_info().auth_type, "none");
+    }
+    #[test]
     fn web_search_disable_api_key_auth_swaps_first_party_key_for_session() {
         let endpoints = EndpointsConfig::default();
         let mut models = IndexMap::new();
@@ -5428,6 +5477,7 @@ reasoning_effort = "low"
             },
             api_key: api_key.map(|s| s.to_string()),
             env_key: env_key.map(EnvKeys::single),
+            auth_not_required: false,
             api_base_url: api_base_url.map(|s| s.to_string()),
         }
     }
@@ -5928,6 +5978,38 @@ reasoning_effort = "low"
         assert_eq!(info.auth_type, "bearer");
     }
     #[test]
+    fn auth_not_required_counts_as_own_credentials() {
+        let mut entry = ModelEntry::fallback("llama3", &EndpointsConfig::default());
+        entry.info.base_url = "http://localhost:11434/v1".into();
+        entry.auth_not_required = true;
+
+        assert!(entry.has_own_credentials());
+        assert!(crate::agent::auth_method::should_advertise_xai_api_key(
+            false,
+            std::iter::once(&entry)
+        ));
+
+        let creds = resolve_credentials(&entry, None);
+        assert_eq!(
+            creds.api_key, None,
+            "open endpoints should not invent a key"
+        );
+
+        let config = sampling_config_for_model(&entry, creds, None, None, None, None);
+        let client = xai_grok_sampler::SamplingClient::new(config).expect("client should build");
+        assert_eq!(
+            client.auth_info().auth_type,
+            "none",
+            "open endpoints must not emit Authorization when no key is configured"
+        );
+
+        let session_creds = resolve_credentials(&entry, Some("session-token"));
+        assert_eq!(
+            session_creds.api_key, None,
+            "auth_not_required must suppress ambient session credentials"
+        );
+    }
+    #[test]
     fn has_own_credentials_guards_session_vs_external_key() {
         let endpoints = EndpointsConfig::default();
         for (model_id, entry) in default_model_entries(&endpoints) {
@@ -5944,6 +6026,70 @@ reasoning_effort = "low"
             None,
         );
         assert!(config_model.has_own_credentials());
+    }
+    #[test]
+    fn auth_not_required_propagates_from_config_and_override() {
+        let entry = ModelEntryConfig {
+            id: None,
+            model: "test".to_string(),
+            base_url: "http://localhost:11434/v1".to_string(),
+            name: None,
+            description: None,
+            max_completion_tokens: None,
+            temperature: None,
+            top_p: None,
+            api_key: None,
+            env_key: None,
+            api_backend: ApiBackend::default(),
+            auth_scheme: None,
+            extra_headers: IndexMap::new(),
+            context_window: NonZeroU64::new(200_000).unwrap(),
+            auto_compact_threshold_percent: None,
+            system_prompt_label: None,
+            api_base_url: None,
+            use_concise: false,
+            agent_type: default_agent_type(),
+            inference_idle_timeout_secs: None,
+            max_retries: None,
+            hidden: false,
+            supported_in_api: true,
+            reasoning_effort: None,
+            supports_reasoning_effort: false,
+            reasoning_efforts: Vec::new(),
+            supports_backend_search: false,
+            compactions_remaining: None,
+            compaction_at_tokens: None,
+            show_model_fingerprint: false,
+            stream_tool_calls: None,
+            laziness_detector: LazinessDetectorPerModelConfig::default(),
+            auth_not_required: true,
+        };
+        assert!(ModelEntry::from_config_entry(&entry).auth_not_required);
+
+        let endpoints = EndpointsConfig::default();
+        let mut base = ModelEntry::fallback("llama3", &endpoints);
+        base.auth_not_required = true;
+        let preserved =
+            ConfigModelOverride::default().apply("llama3", Some(base.clone()), &endpoints);
+        assert!(preserved.auth_not_required);
+
+        let enabled = ConfigModelOverride {
+            auth_not_required: Some(true),
+            ..Default::default()
+        }
+        .apply(
+            "llama3",
+            Some(ModelEntry::fallback("llama3", &endpoints)),
+            &endpoints,
+        );
+        assert!(enabled.auth_not_required);
+
+        let disabled = ConfigModelOverride {
+            auth_not_required: Some(false),
+            ..Default::default()
+        }
+        .apply("llama3", Some(base), &endpoints);
+        assert!(!disabled.auth_not_required);
     }
     /// The `ConfigUnavailable → Unknown` arm matters for safety: a transient
     /// config failure must not read as a definite `NotByok`, which would drive
@@ -6437,6 +6583,7 @@ reasoning_effort = "low"
             top_p: None,
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_backend: ApiBackend::default(),
             auth_scheme: None,
             extra_headers: IndexMap::new(),
@@ -6596,6 +6743,7 @@ reasoning_effort = "low"
             top_p: None,
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_backend: ApiBackend::default(),
             auth_scheme: None,
             extra_headers: IndexMap::new(),
@@ -7047,6 +7195,7 @@ reasoning_effort = "low"
             top_p: None,
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_backend: ApiBackend::default(),
             auth_scheme: None,
             extra_headers: IndexMap::new(),
@@ -10646,6 +10795,7 @@ default = "grok-4.5"
             },
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         }
     }
@@ -10914,12 +11064,13 @@ default = "grok-4.5"
     fn resolve_model_list_keeps_prefetched_context_window_when_embedded_defaults_are_empty() {
         let cfg = Config::default();
         let default_cw = DEFAULT_CONTEXT_WINDOW;
-        let entry =
-            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, default_cw, ApiBackend::default());
+        let entry = prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, default_cw, ApiBackend::default());
         let mut prefetched = IndexMap::new();
         prefetched.insert(PREFETCH_ONLY_MODEL_ID.to_owned(), entry);
         let resolved = resolve_model_list(&cfg, Some(prefetched));
-        let entry = resolved.get(PREFETCH_ONLY_MODEL_ID).expect("model must exist");
+        let entry = resolved
+            .get(PREFETCH_ONLY_MODEL_ID)
+            .expect("model must exist");
         assert_eq!(
             entry.info.context_window.get(),
             default_cw,
@@ -10935,7 +11086,9 @@ default = "grok-4.5"
         let mut prefetched = IndexMap::new();
         prefetched.insert(PREFETCH_ONLY_MODEL_ID.to_owned(), entry);
         let resolved = resolve_model_list(&cfg, Some(prefetched));
-        let entry = resolved.get(PREFETCH_ONLY_MODEL_ID).expect("model must exist");
+        let entry = resolved
+            .get(PREFETCH_ONLY_MODEL_ID)
+            .expect("model must exist");
         assert_eq!(
             entry.info.context_window.get(),
             explicit_cw,
@@ -10946,12 +11099,13 @@ default = "grok-4.5"
     fn resolve_model_list_keeps_prefetched_agent_type_and_api_backend_without_donor() {
         let cfg = Config::default();
         let default_cw = DEFAULT_CONTEXT_WINDOW;
-        let entry =
-            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, default_cw, ApiBackend::default());
+        let entry = prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, default_cw, ApiBackend::default());
         let mut prefetched = IndexMap::new();
         prefetched.insert(PREFETCH_ONLY_MODEL_ID.to_owned(), entry);
         let resolved = resolve_model_list(&cfg, Some(prefetched));
-        let entry = resolved.get(PREFETCH_ONLY_MODEL_ID).expect("model must exist");
+        let entry = resolved
+            .get(PREFETCH_ONLY_MODEL_ID)
+            .expect("model must exist");
         assert_eq!(
             entry.info.agent_type,
             default_agent_type(),
@@ -11002,7 +11156,8 @@ default = "grok-4.5"
     #[test]
     fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
         let cfg = Config::default();
-        let mut entry = prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, 200_000, ApiBackend::default());
+        let mut entry =
+            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, 200_000, ApiBackend::default());
         entry.info.supported_in_api = false;
         let mut p = IndexMap::new();
         p.insert(PREFETCH_ONLY_MODEL_ID.to_string(), entry);

@@ -38,6 +38,7 @@ fn detector_entry(
         info,
         api_key: None,
         env_key: None,
+        auth_not_required: false,
         api_base_url: None,
     }
 }

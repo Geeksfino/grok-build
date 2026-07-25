@@ -847,6 +847,11 @@ pub fn parse_remote_model_value(
         top_p: get_f64(obj, "topP").or_else(|| get_f64(obj, "top_p")).map(|v| v as f32),
         api_key: get_string(obj, "apiKey").or_else(|| get_string(obj, "api_key")),
         env_key: get_env_keys(obj, "envKey").or_else(|| get_env_keys(obj, "env_key")),
+        auth_not_required: obj
+            .get("authNotRequired")
+            .or_else(|| obj.get("auth_not_required"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         api_backend,
         context_window,
         auto_compact_threshold_percent: get_u64(obj, "autoCompactThresholdPercent")
