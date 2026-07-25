@@ -226,7 +226,29 @@ fn handle_edit_fields_key(
                 && wizard.toggle_store_key_in_config()
             {
                 SetupWizardInputOutcome::Changed
+            } else if matches!(wizard.focus(), Some(EditFieldFocus::ApiBackend))
+                && wizard.cycle_api_backend_next()
+            {
+                SetupWizardInputOutcome::Changed
             } else if wizard.insert_char(' ') {
+                SetupWizardInputOutcome::Changed
+            } else {
+                SetupWizardInputOutcome::Unchanged
+            }
+        }
+        KeyCode::Left => {
+            if matches!(wizard.focus(), Some(EditFieldFocus::ApiBackend))
+                && wizard.cycle_api_backend_prev()
+            {
+                SetupWizardInputOutcome::Changed
+            } else {
+                SetupWizardInputOutcome::Unchanged
+            }
+        }
+        KeyCode::Right => {
+            if matches!(wizard.focus(), Some(EditFieldFocus::ApiBackend))
+                && wizard.cycle_api_backend_next()
+            {
                 SetupWizardInputOutcome::Changed
             } else {
                 SetupWizardInputOutcome::Unchanged
@@ -249,6 +271,13 @@ fn handle_edit_fields_key(
             }
             Some(EditFieldFocus::StoreKeyInConfig) => {
                 if wizard.toggle_store_key_in_config() {
+                    SetupWizardInputOutcome::Changed
+                } else {
+                    SetupWizardInputOutcome::Unchanged
+                }
+            }
+            Some(EditFieldFocus::ApiBackend) => {
+                if wizard.cycle_api_backend_next() {
                     SetupWizardInputOutcome::Changed
                 } else {
                     SetupWizardInputOutcome::Unchanged
@@ -352,6 +381,15 @@ fn render_edit_fields(
         Some((true, fields.base_url.len())),
         theme,
     ));
+    if fields.shows_api_backend_selector() {
+        lines.push(field_line(
+            "API backend",
+            &fields.api_backend,
+            matches!(fields.focus, EditFieldFocus::ApiBackend),
+            None,
+            theme,
+        ));
+    }
     lines.push(field_line(
         "Model",
         &fields.model,
@@ -546,6 +584,12 @@ mod tests {
             unsafe { std::env::remove_var(key) };
             Self { key, original }
         }
+
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, original }
+        }
     }
 
     impl Drop for EnvVarGuard {
@@ -657,27 +701,91 @@ mod tests {
 
     #[test]
     #[serial_test::serial(SETUP_WIZARD_ENV)]
-    fn typed_api_key_without_exported_env_is_persisted_for_reconnect() {
+    fn typed_api_key_without_exported_env_requires_opt_in_to_persist() {
         let _env_guard = EnvVarGuard::unset("OPENAI_API_KEY");
         let mut wizard = edit_fields_wizard("openai");
         wizard.set_model("gpt-4.1");
-        let fields = wizard.edit_fields_mut().expect("edit fields should be active");
+        let fields = wizard
+            .edit_fields_mut()
+            .expect("edit fields should be active");
+        fields.api_key_input = "sk-test-value".into();
+        fields.store_key_in_config = false;
+
+        let validate = wizard
+            .build_validate_request()
+            .expect("typed key should still validate in-memory");
+        assert_eq!(validate.api_key.as_deref(), Some("sk-test-value"));
+
+        let write = wizard
+            .build_provider_write()
+            .expect("config write should still be shapeable");
+        assert_eq!(write.env_key.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(
+            write.api_key, None,
+            "typed key must not be persisted unless the checkbox is enabled"
+        );
+
+        let err = wizard
+            .build_submission()
+            .expect_err("submit must stop before reconnect when env export is missing");
+        assert!(
+            err.contains("OPENAI_API_KEY"),
+            "missing-export error should name the env var: {err}"
+        );
+        assert!(
+            err.contains("Store in config.toml"),
+            "missing-export error should point at the opt-in checkbox: {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(SETUP_WIZARD_ENV)]
+    fn typed_api_key_with_exported_env_can_submit_without_persisting_secret() {
+        let _env_guard = EnvVarGuard::set("OPENAI_API_KEY", "env-test-value");
+        let mut wizard = edit_fields_wizard("openai");
+        wizard.set_model("gpt-4.1");
+        let fields = wizard
+            .edit_fields_mut()
+            .expect("edit fields should be active");
         fields.api_key_input = "sk-test-value".into();
         fields.store_key_in_config = false;
 
         let submission = wizard
             .build_submission()
-            .expect("typed key should produce a submission");
+            .expect("exported env should allow reconnect without persisting the typed key");
 
         assert_eq!(submission.write.env_key.as_deref(), Some("OPENAI_API_KEY"));
-        assert_eq!(submission.write.api_key.as_deref(), Some("sk-test-value"));
-        assert!(
-            submission
-                .post_setup_notice
-                .as_deref()
-                .is_some_and(|notice| notice.contains("OPENAI_API_KEY")),
-            "env-fallback success should explain why the typed key was persisted"
+        assert_eq!(submission.write.api_key, None);
+        assert_eq!(submission.post_setup_notice, None);
+    }
+
+    #[test]
+    fn custom_preset_allows_cycling_api_backend_and_persisting_selection() {
+        let mut wizard = edit_fields_wizard("custom");
+        wizard.set_model("proxy-model");
+        wizard.edit_fields_mut().expect("edit fields").base_url = "https://proxy.example/v1".into();
+
+        let outcome =
+            handle_setup_wizard_input(&key_event(KeyCode::Tab, KeyModifiers::NONE), &mut wizard);
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+        let outcome =
+            handle_setup_wizard_input(&key_event(KeyCode::Enter, KeyModifiers::NONE), &mut wizard);
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+        let outcome = handle_setup_wizard_input(
+            &key_event(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut wizard,
         );
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+
+        let fields = wizard
+            .edit_fields()
+            .expect("edit fields should remain active");
+        assert_eq!(fields.api_backend, "responses");
+
+        let write = wizard
+            .build_provider_write()
+            .expect("custom preset should persist the chosen backend");
+        assert_eq!(write.api_backend, "responses");
     }
 
     #[test]
@@ -691,7 +799,9 @@ mod tests {
         );
 
         assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
-        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        let fields = wizard
+            .edit_fields()
+            .expect("edit fields should remain active");
         assert_eq!(fields.model, "q");
         assert!(matches!(wizard.phase(), SetupWizardPhase::EditFields));
 
@@ -702,7 +812,9 @@ mod tests {
         );
 
         assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
-        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        let fields = wizard
+            .edit_fields()
+            .expect("edit fields should remain active");
         assert_eq!(fields.api_key_input, "q");
         assert!(matches!(wizard.phase(), SetupWizardPhase::EditFields));
     }
@@ -718,7 +830,9 @@ mod tests {
         );
 
         assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
-        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        let fields = wizard
+            .edit_fields()
+            .expect("edit fields should remain active");
         assert_eq!(fields.name, "OpenAI ");
         assert!(!fields.store_key_in_config);
     }
@@ -734,7 +848,9 @@ mod tests {
         );
 
         assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
-        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        let fields = wizard
+            .edit_fields()
+            .expect("edit fields should remain active");
         assert!(fields.store_key_in_config);
     }
 }

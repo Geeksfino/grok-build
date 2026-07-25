@@ -94,24 +94,31 @@ async fn probe_generation_endpoint(
 ) -> Result<()> {
     let base_url = request.base_url.trim_end_matches('/');
     let model = request.model.trim();
-    let (path, body) = if request.api_backend == "messages" {
-        (
+    let (path, body) = match request.api_backend.as_str() {
+        "messages" => (
             "messages",
             serde_json::json!({
                 "model": model,
                 "max_tokens": 1,
                 "messages": [{ "role": "user", "content": "ping" }],
             }),
-        )
-    } else {
-        (
+        ),
+        "responses" => (
+            "responses",
+            serde_json::json!({
+                "model": model,
+                "max_output_tokens": 1,
+                "input": [{ "role": "user", "content": "ping" }],
+            }),
+        ),
+        _ => (
             "chat/completions",
             serde_json::json!({
                 "model": model,
                 "max_tokens": 1,
                 "messages": [{ "role": "user", "content": "ping" }],
             }),
-        )
+        ),
     };
     let url = format!("{base_url}/{path}");
     let response = client
@@ -146,5 +153,49 @@ fn body_snippet(body: &str) -> String {
         }
         snippet.push_str("...");
         snippet
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    use serde_json::json;
+    use xai_grok_test_support::{MockInferenceServer, ScriptedResponse};
+
+    #[tokio::test]
+    async fn validate_provider_endpoint_uses_responses_probe_for_responses_backend() {
+        let server = MockInferenceServer::start().await.unwrap();
+        server.enqueue_response(
+            "/v1/chat/completions",
+            ScriptedResponse::json(500, json!({ "error": "wrong endpoint" })),
+        );
+        let request = ValidateRequest {
+            base_url: server.url(),
+            model: "test-model".into(),
+            api_key: Some("sk-test".into()),
+            api_backend: "responses".into(),
+            auth_not_required: false,
+            extra_headers: IndexMap::new(),
+        };
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let headers = build_headers(&request).unwrap();
+
+        probe_generation_endpoint(&client, &request, headers)
+            .await
+            .expect("responses backend should probe /responses");
+
+        assert!(
+            server.has_responses_request(),
+            "responses backend should hit /v1/responses"
+        );
+        assert!(
+            !server.has_chat_completion_request(),
+            "responses backend must not fall back to /v1/chat/completions"
+        );
     }
 }

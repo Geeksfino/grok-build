@@ -5,6 +5,7 @@ use crate::provider_config_write::ProviderModelWrite;
 use crate::provider_presets::{ProviderPreset, all_presets};
 
 const CUSTOM_PROVIDER_ENV_KEY: &str = "CUSTOM_PROVIDER_API_KEY";
+const API_BACKEND_OPTIONS: [&str; 3] = ["chat_completions", "messages", "responses"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupWizardPhase {
@@ -17,6 +18,7 @@ pub enum SetupWizardPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditFieldFocus {
     BaseUrl,
+    ApiBackend,
     Model,
     Name,
     ApiKey,
@@ -75,12 +77,16 @@ impl EditFieldsState {
         !self.auth_not_required
     }
 
+    pub fn shows_api_backend_selector(&self) -> bool {
+        self.preset_id.eq_ignore_ascii_case("custom")
+    }
+
     pub fn visible_focus_order(&self) -> Vec<EditFieldFocus> {
-        let mut order = vec![
-            EditFieldFocus::BaseUrl,
-            EditFieldFocus::Model,
-            EditFieldFocus::Name,
-        ];
+        let mut order = vec![EditFieldFocus::BaseUrl];
+        if self.shows_api_backend_selector() {
+            order.push(EditFieldFocus::ApiBackend);
+        }
+        order.extend([EditFieldFocus::Model, EditFieldFocus::Name]);
         if self.requires_api_key() {
             order.push(EditFieldFocus::ApiKey);
             order.push(EditFieldFocus::StoreKeyInConfig);
@@ -305,6 +311,14 @@ impl SetupWizardState {
         true
     }
 
+    pub fn cycle_api_backend_next(&mut self) -> bool {
+        self.cycle_api_backend(1)
+    }
+
+    pub fn cycle_api_backend_prev(&mut self) -> bool {
+        self.cycle_api_backend(-1)
+    }
+
     pub fn build_validate_request(&self) -> Result<ValidateRequest, String> {
         let Some(fields) = self.edit_fields() else {
             return Err("No preset selected".to_string());
@@ -368,42 +382,41 @@ impl SetupWizardState {
             return Err("No preset selected".to_string());
         };
         let validate = self.build_validate_request()?;
+        ensure_reconnect_api_key_available(fields)?;
         let write = self.build_provider_write()?;
-        let post_setup_notice = env_fallback_notice(fields);
         Ok(SetupWizardSubmission {
             validate,
             write,
-            post_setup_notice,
+            post_setup_notice: None,
         })
+    }
+
+    fn cycle_api_backend(&mut self, direction: isize) -> bool {
+        let Some(fields) = self.edit_fields_mut() else {
+            return false;
+        };
+        if !fields.shows_api_backend_selector() {
+            return false;
+        }
+        let current_idx = API_BACKEND_OPTIONS
+            .iter()
+            .position(|backend| *backend == fields.api_backend)
+            .unwrap_or(0) as isize;
+        let total = API_BACKEND_OPTIONS.len() as isize;
+        let next_idx = (current_idx + direction).rem_euclid(total) as usize;
+        fields.api_backend = API_BACKEND_OPTIONS[next_idx].to_string();
+        self.clear_error_state();
+        true
     }
 }
 
 fn stored_api_key(fields: &EditFieldsState) -> Option<String> {
     let entered = non_empty(fields.api_key_input.trim()).map(str::to_string)?;
-    if fields.store_key_in_config || should_persist_typed_key_for_env_fallback(fields) {
+    if fields.store_key_in_config {
         Some(entered)
     } else {
         None
     }
-}
-
-fn env_fallback_notice(fields: &EditFieldsState) -> Option<String> {
-    let env_key = fields.env_key_name.as_deref()?;
-    should_persist_typed_key_for_env_fallback(fields).then(|| {
-        format!(
-            "Saved provider config. {env_key} is not exported in this environment, so the typed API key was saved in config for reconnect."
-        )
-    })
-}
-
-fn should_persist_typed_key_for_env_fallback(fields: &EditFieldsState) -> bool {
-    !fields.auth_not_required
-        && !fields.store_key_in_config
-        && non_empty(fields.api_key_input.trim()).is_some()
-        && fields
-            .env_key_name
-            .as_ref()
-            .is_some_and(|key_name| std::env::var_os(key_name).is_none())
 }
 
 fn resolve_probe_api_key(fields: &EditFieldsState) -> Result<Option<String>, String> {
@@ -413,12 +426,9 @@ fn resolve_probe_api_key(fields: &EditFieldsState) -> Result<Option<String>, Str
     if let Some(entered) = non_empty(fields.api_key_input.trim()) {
         return Ok(Some(entered.to_string()));
     }
-    if let Some(env_key) = fields.env_key_name.as_ref()
-        && let Some(env_value) = std::env::var_os(env_key)
-    {
-        let value = env_value.to_string_lossy();
-        if let Some(non_empty) = non_empty(value.trim()) {
-            return Ok(Some(non_empty.to_string()));
+    if let Some(env_key) = fields.env_key_name.as_ref() {
+        if let Some(exported) = exported_env_api_key(env_key) {
+            return Ok(Some(exported));
         }
     }
     let missing = fields
@@ -428,6 +438,37 @@ fn resolve_probe_api_key(fields: &EditFieldsState) -> Result<Option<String>, Str
     Err(format!(
         "API key required (enter one now or export {missing})"
     ))
+}
+
+fn ensure_reconnect_api_key_available(fields: &EditFieldsState) -> Result<(), String> {
+    if fields.auth_not_required
+        || fields.store_key_in_config
+        || non_empty(fields.api_key_input.trim()).is_none()
+    {
+        return Ok(());
+    }
+    if fields
+        .env_key_name
+        .as_deref()
+        .and_then(exported_env_api_key)
+        .is_some()
+    {
+        return Ok(());
+    }
+    Err(missing_export_or_store_message(fields))
+}
+
+fn missing_export_or_store_message(fields: &EditFieldsState) -> String {
+    let env_key = fields.env_key_name.as_deref().unwrap_or("PROVIDER_API_KEY");
+    format!(
+        "API key will not be saved. Export {env_key}=... in this shell or enable \"Store in config.toml\" before continuing."
+    )
+}
+
+fn exported_env_api_key(env_key: &str) -> Option<String> {
+    let env_value = std::env::var_os(env_key)?;
+    let value = env_value.to_string_lossy();
+    non_empty(value.trim()).map(str::to_string)
 }
 
 fn sanitize_catalog_component(model: &str) -> String {
