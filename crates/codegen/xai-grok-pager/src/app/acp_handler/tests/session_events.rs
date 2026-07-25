@@ -453,6 +453,30 @@
         ));
     }
 
+    /// A BYOK/custom-provider 401 with no interactive login method available must
+    /// stay on the provider error path instead of surfacing the generic
+    /// re-auth/login guidance.
+    #[test]
+    fn apply_retry_state_custom_provider_401_without_interactive_login_keeps_retry_failed() {
+        let mut session = make_session(Some("s1"));
+        let mut scrollback = ScrollbackState::new();
+        apply_retry_state_with_interactive_auth(
+            &RetryState::Failed {
+                error_type: "api".into(),
+                message: "Unauthorized (401) from https://example-provider.invalid/v1/responses"
+                    .into(),
+            },
+            &mut session,
+            &mut scrollback,
+            false,
+            false,
+        );
+        assert!(matches!(
+            last_session_event(&scrollback),
+            Some(SessionEvent::RetryFailed { .. })
+        ));
+    }
+
     /// Legacy WebLogin auth keeps its verbose message (with `grok logout` /
     /// `grok login` guidance), not the generic re-auth prompt.
     #[test]
@@ -701,7 +725,8 @@
             elapsed_ms: Some(300),
             summary_preview: None,
         };
-        let changed = handle_child_session_notification(update, child_sid, &mut agent, false);
+        let changed =
+            handle_child_session_notification(update, child_sid, &mut agent, false, true);
         assert!(changed);
 
         let info = agent.subagent_sessions.get(child_sid).unwrap();
@@ -741,7 +766,7 @@
             percentage: 72,
             reason: "threshold".into(),
         };
-        let _ = handle_child_session_notification(update, child_sid, &mut agent, false);
+        let _ = handle_child_session_notification(update, child_sid, &mut agent, false, true);
 
         let child_view = agent.subagent_views.get(child_sid).unwrap();
         assert_eq!(
@@ -760,7 +785,8 @@
             percentage: 85,
             reason: "threshold".into(),
         };
-        let changed = handle_child_session_notification(update, "unknown-child", &mut agent, false);
+        let changed =
+            handle_child_session_notification(update, "unknown-child", &mut agent, false, true);
         assert!(!changed);
     }
 
@@ -779,7 +805,8 @@
             elapsed_ms: Some(300),
             summary_preview: None,
         };
-        let changed = handle_child_session_notification(update, child_sid, &mut agent, false);
+        let changed =
+            handle_child_session_notification(update, child_sid, &mut agent, false, true);
         // No child_view means nothing visible changed — must not trigger redraw.
         assert!(!changed);
         // SubagentInfo should still be updated (data correctness).
@@ -792,7 +819,8 @@
     fn child_unknown_event_returns_false() {
         let mut agent = make_agent(Some("root-sess"));
         let update = XaiSessionUpdate::MemoryFlushStarted;
-        let changed = handle_child_session_notification(update, "child-1", &mut agent, false);
+        let changed =
+            handle_child_session_notification(update, "child-1", &mut agent, false, true);
         assert!(!changed);
     }
 

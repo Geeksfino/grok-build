@@ -1004,6 +1004,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
             vec![]
         }
+        Action::SubmitSetupWizard(submission) => {
+            vec![Effect::SubmitSetupWizard {
+                submission,
+                connect_flags: app.connect_flags.clone(),
+                use_leader: app.leader_mode,
+            }]
+        }
         Action::OpenNextLink => {
             with_active_agent(app, |agent| agent.cycle_highlighted_link(true));
             vec![]

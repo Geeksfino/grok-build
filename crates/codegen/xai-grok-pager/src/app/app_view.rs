@@ -937,6 +937,9 @@ pub struct AppView {
     /// an `AvailableCommandsUpdate` that includes skills, so subsequent
     /// sessions start with the full command catalog immediately.
     pub bootstrap_acp_commands: Vec<agent_client_protocol::AvailableCommand>,
+    /// Launch-time ACP connection flags reused when the setup wizard reconnects
+    /// the pager after persisting provider configuration.
+    pub connect_flags: crate::acp::ConnectFlags,
     /// Auth methods from the ACP connection (preserved for re-login after logout).
     pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
@@ -1287,6 +1290,7 @@ impl AppView {
             restore_code: None,
             agent_override: None,
             bootstrap_acp_commands,
+            connect_flags: crate::acp::ConnectFlags::default(),
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
             setup_wizard: None,
@@ -2123,65 +2127,81 @@ impl AppView {
         .is_some_and(|(owner, _, _)| !crate::views::announcements::is_dismissible(owner));
         let has_foreign_resume = self.foreign_resume_hint().is_some();
         let outcome = match self.active_view {
-            ActiveView::Welcome => handle_welcome_input(
-                ev,
-                &mut WelcomeInputCtx {
-                    auth_state: &self.auth_state,
-                    trust_state: &self.trust_state,
-                    cwd: &self.cwd,
-                    mid_session_login: self.auth_return_view.is_some(),
-                    auth_code_input: &mut self.auth_code_input,
-                    prompt: &mut self.welcome_prompt,
-                    prompt_focused: &mut self.welcome_prompt_focused,
-                    new_worktree_dialog: &mut self.new_worktree_dialog,
-                    menu_index: &mut self.welcome_menu_index,
-                    menu_rects: &self.welcome_menu_rects,
-                    menu_count: if zdr_blocked {
-                        2
-                    } else {
-                        3 + if self.has_claude_import { 1 } else { 0 }
-                            + if self.welcome_show_changelog_action {
-                                1
+            ActiveView::Welcome => {
+                if let Some(wizard) = self.setup_wizard.as_mut() {
+                    match crate::setup_wizard::handle_setup_wizard_input(ev, wizard) {
+                        crate::setup_wizard::SetupWizardInputOutcome::Unchanged => {
+                            InputOutcome::Unchanged
+                        }
+                        crate::setup_wizard::SetupWizardInputOutcome::Changed => {
+                            InputOutcome::Changed
+                        }
+                        crate::setup_wizard::SetupWizardInputOutcome::Action(action) => {
+                            InputOutcome::Action(action)
+                        }
+                    }
+                } else {
+                    handle_welcome_input(
+                        ev,
+                        &mut WelcomeInputCtx {
+                            auth_state: &self.auth_state,
+                            trust_state: &self.trust_state,
+                            cwd: &self.cwd,
+                            mid_session_login: self.auth_return_view.is_some(),
+                            auth_code_input: &mut self.auth_code_input,
+                            prompt: &mut self.welcome_prompt,
+                            prompt_focused: &mut self.welcome_prompt_focused,
+                            new_worktree_dialog: &mut self.new_worktree_dialog,
+                            menu_index: &mut self.welcome_menu_index,
+                            menu_rects: &self.welcome_menu_rects,
+                            menu_count: if zdr_blocked {
+                                2
                             } else {
-                                0
-                            }
-                    },
-                    prompt_rect: self.welcome_prompt_rect.as_ref(),
-                    import_banner_rect: self.welcome_import_banner_rect.as_ref(),
-                    auth_url_rect: self.welcome_auth_url_rect.as_ref(),
-                    auth_fallback_rect: self.welcome_auth_fallback_rect.as_ref(),
-                    refresh_rect: self.welcome_refresh_rect.as_ref(),
-                    gate_url_rect: self.welcome_gate_url_rect.as_ref(),
-                    upgrade_cta_rect: self.welcome_upgrade_cta_rect.as_ref(),
-                    on_upgrade_cta: &mut self.welcome_on_upgrade_cta,
-                    upgrade_cta_keyboard: welcome_pinned_upgrade_cta,
-                    changelog_cta_rect: self.welcome_changelog_cta_rect.as_ref(),
-                    on_changelog_cta: &mut self.welcome_on_changelog_cta,
-                    announcement_truncated: self.welcome_announcement.truncated,
-                    announcement_rect: self.welcome_announcement.rect.as_ref(),
-                    on_announcement_cta: &mut self.welcome_announcement.on_cta,
-                    announcement_expanded: &mut self.welcome_announcement.expanded,
-                    show_raw_url: &mut self.auth_show_raw_url,
-                    has_access,
-                    is_zdr_blocked: zdr_blocked,
-                    sp_entries: &mut self.session_picker_entries,
-                    sp_state: &mut self.session_picker_state,
-                    sp_content_results: &self.session_picker_content_results,
-                    sp_content_loading: self.session_picker_content_loading,
-                    sp_entries_query: &self.session_picker_entries_query,
-                    has_claude_import: self.has_claude_import,
-                    import_claude_modal: &mut self.import_claude_modal,
-                    welcome_doc_viewer: &mut self.welcome_doc_viewer,
-                    changelog_markdown: &self.changelog_markdown,
-                    show_changelog_action: self.welcome_show_changelog_action,
-                    has_pending_update: self.pending_update_version.is_some(),
-                    has_foreign_resume,
-                    cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-                    session_picker_grouped: self.session_picker_grouped,
-                    sp_source_filter: &mut self.session_picker_source_filter,
-                    chat_mode: self.chat_mode,
-                },
-            ),
+                                3 + if self.has_claude_import { 1 } else { 0 }
+                                    + if self.welcome_show_changelog_action {
+                                        1
+                                    } else {
+                                        0
+                                    }
+                            },
+                            prompt_rect: self.welcome_prompt_rect.as_ref(),
+                            import_banner_rect: self.welcome_import_banner_rect.as_ref(),
+                            auth_url_rect: self.welcome_auth_url_rect.as_ref(),
+                            auth_fallback_rect: self.welcome_auth_fallback_rect.as_ref(),
+                            refresh_rect: self.welcome_refresh_rect.as_ref(),
+                            gate_url_rect: self.welcome_gate_url_rect.as_ref(),
+                            upgrade_cta_rect: self.welcome_upgrade_cta_rect.as_ref(),
+                            on_upgrade_cta: &mut self.welcome_on_upgrade_cta,
+                            upgrade_cta_keyboard: welcome_pinned_upgrade_cta,
+                            changelog_cta_rect: self.welcome_changelog_cta_rect.as_ref(),
+                            on_changelog_cta: &mut self.welcome_on_changelog_cta,
+                            announcement_truncated: self.welcome_announcement.truncated,
+                            announcement_rect: self.welcome_announcement.rect.as_ref(),
+                            on_announcement_cta: &mut self.welcome_announcement.on_cta,
+                            announcement_expanded: &mut self.welcome_announcement.expanded,
+                            show_raw_url: &mut self.auth_show_raw_url,
+                            has_access,
+                            is_zdr_blocked: zdr_blocked,
+                            sp_entries: &mut self.session_picker_entries,
+                            sp_state: &mut self.session_picker_state,
+                            sp_content_results: &self.session_picker_content_results,
+                            sp_content_loading: self.session_picker_content_loading,
+                            sp_entries_query: &self.session_picker_entries_query,
+                            has_claude_import: self.has_claude_import,
+                            import_claude_modal: &mut self.import_claude_modal,
+                            welcome_doc_viewer: &mut self.welcome_doc_viewer,
+                            changelog_markdown: &self.changelog_markdown,
+                            show_changelog_action: self.welcome_show_changelog_action,
+                            has_pending_update: self.pending_update_version.is_some(),
+                            has_foreign_resume,
+                            cwd_has_git_ancestor: self.cwd_has_git_ancestor,
+                            session_picker_grouped: self.session_picker_grouped,
+                            sp_source_filter: &mut self.session_picker_source_filter,
+                            chat_mode: self.chat_mode,
+                        },
+                    )
+                }
+            }
             ActiveView::Agent(id) => {
                 let overlay_active = self
                     .dashboard
@@ -3967,6 +3987,19 @@ impl AppView {
                                 &theme,
                             );
                         }
+                        let has_cloud_modal = false;
+                        let cursor = if let Some(wizard) = self.setup_wizard.as_ref() {
+                            crate::setup_wizard::render_setup_wizard(
+                                view_area,
+                                f.buffer_mut(),
+                                wizard,
+                            )
+                            .cursor_pos
+                        } else if has_cloud_modal {
+                            None
+                        } else {
+                            result.cursor_pos
+                        };
                         if !has_access && !self.access_gate_shown_logged {
                             self.access_gate_shown_logged = true;
                             xai_grok_telemetry::session_ctx::log_event(
@@ -3986,12 +4019,6 @@ impl AppView {
                         if let Some(panel) = &scroll_debug_panel {
                             panel.render(full_area, f.buffer_mut());
                         }
-                        let has_cloud_modal = false;
-                        let cursor = if has_cloud_modal {
-                            None
-                        } else {
-                            result.cursor_pos
-                        };
                         let on_url = self.welcome_auth_url_rect.as_ref().is_some_and(|r| {
                             matches!(self.auth_state, AuthState::Authenticating { .. })
                                 && self.last_mouse_pos.is_some_and(|(mx, my)| {
@@ -5123,6 +5150,7 @@ pub(crate) mod tests {
             restore_code: None,
             agent_override: None,
             bootstrap_acp_commands: Vec::new(),
+            connect_flags: crate::acp::ConnectFlags::default(),
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
             setup_wizard: None,

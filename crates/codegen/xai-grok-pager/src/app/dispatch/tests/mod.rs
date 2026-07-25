@@ -132,6 +132,7 @@ fn test_app() -> AppView {
         restore_code: None,
         agent_override: None,
         bootstrap_acp_commands: Vec::new(),
+        connect_flags: crate::acp::ConnectFlags::default(),
         auth_methods: vec![acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
             acp::AuthMethodId::new("grok.com"),
             "Grok".to_string(),

@@ -138,6 +138,75 @@ fn foreign_resume_result_rejects_startup_conflict_before_completion() {
 }
 
 #[test]
+fn setup_wizard_submit_complete_success_clears_wizard_and_replays_startup() {
+    let mut app = test_app();
+    app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+
+    let gated = dispatch(Action::NewSession, &mut app);
+    assert!(gated.is_empty(), "wizard-open startup should be deferred");
+    assert!(
+        app.deferred_startup.new_session,
+        "new-session intent must be stashed while setup is open"
+    );
+
+    let notice = "Saved provider config. Exported OPENAI_API_KEY for this run only.".to_string();
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SetupWizardSubmitComplete {
+            result: Ok(crate::setup_wizard::SetupWizardCompletion {
+                connection: None,
+                transient_env_notice: Some(notice.clone()),
+            }),
+        }),
+        &mut app,
+    );
+
+    assert!(
+        app.setup_wizard.is_none(),
+        "wizard should close after success"
+    );
+    assert!(
+        !app.deferred_startup.new_session,
+        "deferred startup should drain once the wizard closes"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::CreateSession { .. })),
+        "startup drain should replay the deferred new-session intent"
+    );
+    assert_eq!(
+        app.startup_warnings
+            .last()
+            .map(|warning| warning.message.as_str()),
+        Some(notice.as_str())
+    );
+}
+
+#[test]
+fn setup_wizard_submit_complete_error_keeps_wizard_open() {
+    let mut app = test_app();
+    app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SetupWizardSubmitComplete {
+            result: Err("Validation failed with 401".into()),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty(), "failed setup should not drain startup");
+    let wizard = app
+        .setup_wizard
+        .as_ref()
+        .expect("wizard should remain open");
+    assert!(matches!(
+        wizard.phase(),
+        crate::setup_wizard::SetupWizardPhase::Error(message)
+            if message == "Validation failed with 401"
+    ));
+}
+
+#[test]
 fn x11_primary_hint_requires_canonical_full_miss_outcome() {
     use crate::app::actions::{ClipboardPasteCompletion, ClipboardPasteTarget};
     assert_eq!(

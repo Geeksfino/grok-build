@@ -127,6 +127,10 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
         _ => {}
     }
     let is_api_key_auth = app.is_api_key_auth;
+    let is_interactive_reauth_available =
+        crate::acp::find_interactive_login_method(&app.auth_methods)
+            .1
+            .is_some();
     let matched = match find_session_match(app, &session_notif.session_id) {
         Some(m) => m,
         None => {
@@ -151,6 +155,7 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             child_sid,
             agent,
             is_api_key_auth,
+            is_interactive_reauth_available,
         );
         return changed && is_active;
     }
@@ -191,11 +196,12 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
         | XaiSessionUpdate::MemoryFlushCompleted { .. }
         | XaiSessionUpdate::MemoryDreamCompleted { .. }
         | XaiSessionUpdate::MemorySessionSaved { .. }) => {
-            let changed = apply_session_event(
+            let changed = apply_session_event_with_interactive_auth(
                 update,
                 &mut agent.session,
                 &mut agent.scrollback,
                 is_api_key_auth,
+                is_interactive_reauth_available,
             );
             if let XaiSessionUpdate::AutoCompactCompleted { tokens_after, .. } = update {
                 refresh_context_used(agent, *tokens_after);
@@ -1043,6 +1049,7 @@ pub(super) fn handle_child_session_notification(
     child_sid: &str,
     agent: &mut AgentView,
     is_api_key_auth: bool,
+    is_interactive_reauth_available: bool,
 ) -> bool {
     match update {
         XaiSessionUpdate::AutoCompactStarted { .. }
@@ -1056,11 +1063,12 @@ pub(super) fn handle_child_session_notification(
             };
             let mut changed = false;
             if let Some(child_view) = agent.subagent_views.get_mut(child_sid) {
-                changed = apply_session_event(
+                changed = apply_session_event_with_interactive_auth(
                     &update,
                     &mut child_view.session,
                     &mut child_view.scrollback,
                     is_api_key_auth,
+                    is_interactive_reauth_available,
                 );
                 if let Some(tokens_after) = compact_tokens {
                     refresh_context_used(child_view, tokens_after);
@@ -1081,11 +1089,12 @@ pub(super) fn handle_child_session_notification(
         | XaiSessionUpdate::MemoryDreamCompleted { .. }
         | XaiSessionUpdate::MemorySessionSaved { .. }) => {
             if let Some(child_view) = agent.subagent_views.get_mut(child_sid) {
-                apply_session_event(
+                apply_session_event_with_interactive_auth(
                     update,
                     &mut child_view.session,
                     &mut child_view.scrollback,
                     is_api_key_auth,
+                    is_interactive_reauth_available,
                 )
             } else {
                 false
@@ -1109,11 +1118,22 @@ pub(crate) fn apply_session_event_for_test(
 ) -> bool {
     apply_session_event(update, session, scrollback, false)
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn apply_session_event(
     update: &XaiSessionUpdate,
     session: &mut AgentSession,
     scrollback: &mut crate::scrollback::state::ScrollbackState,
     is_api_key_auth: bool,
+) -> bool {
+    apply_session_event_with_interactive_auth(update, session, scrollback, is_api_key_auth, true)
+}
+
+pub(super) fn apply_session_event_with_interactive_auth(
+    update: &XaiSessionUpdate,
+    session: &mut AgentSession,
+    scrollback: &mut crate::scrollback::state::ScrollbackState,
+    is_api_key_auth: bool,
+    is_interactive_reauth_available: bool,
 ) -> bool {
     match update {
         XaiSessionUpdate::AutoCompactStarted { percentage, .. } => {
@@ -1166,7 +1186,13 @@ pub(super) fn apply_session_event(
         }
         XaiSessionUpdate::RetryState(retry) => {
             tracing::debug!("Retry state: {retry:?}");
-            apply_retry_state(retry, session, scrollback, is_api_key_auth);
+            apply_retry_state_with_interactive_auth(
+                retry,
+                session,
+                scrollback,
+                is_api_key_auth,
+                is_interactive_reauth_available,
+            );
             true
         }
         XaiSessionUpdate::ImageDropped { notes } => {
@@ -1219,11 +1245,22 @@ pub(super) fn apply_image_compressed(
     tracing::info!("Image compressed: {message}");
     false
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn apply_retry_state(
     retry: &xai_grok_shell::extensions::notification::RetryState,
     session: &mut AgentSession,
     scrollback: &mut crate::scrollback::state::ScrollbackState,
     is_api_key_auth: bool,
+) {
+    apply_retry_state_with_interactive_auth(retry, session, scrollback, is_api_key_auth, true);
+}
+
+pub(super) fn apply_retry_state_with_interactive_auth(
+    retry: &xai_grok_shell::extensions::notification::RetryState,
+    session: &mut AgentSession,
+    scrollback: &mut crate::scrollback::state::ScrollbackState,
+    is_api_key_auth: bool,
+    is_interactive_reauth_available: bool,
 ) {
     let mut is_credit_limit = false;
     let mut is_reauth = false;
@@ -1267,7 +1304,10 @@ pub(super) fn apply_retry_state(
                 session.credit_limit_blocked = true;
             } else if is_free_usage {
                 session.free_usage_blocked = true;
-            } else if !*rate_limited && is_reauthable_failure(None, reason) {
+            } else if !*rate_limited
+                && is_interactive_reauth_available
+                && is_reauthable_failure(None, reason)
+            {
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
             } else {
@@ -1293,7 +1333,9 @@ pub(super) fn apply_retry_state(
             is_credit_limit = super::super::dispatch::is_credit_limit_error(None, message);
             if is_credit_limit {
                 session.credit_limit_blocked = true;
-            } else if is_reauthable_failure(Some(error_type.as_str()), message) {
+            } else if is_interactive_reauth_available
+                && is_reauthable_failure(Some(error_type.as_str()), message)
+            {
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
             } else if error_type == "context_length" {

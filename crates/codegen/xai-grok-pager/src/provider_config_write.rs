@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 use toml_edit::{DocumentMut, Item, Table, value};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderModelWrite {
     pub catalog_id: String,
     pub model: String,

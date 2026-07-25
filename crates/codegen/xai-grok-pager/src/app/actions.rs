@@ -600,6 +600,8 @@ pub enum Action {
     SwitchAccount,
     /// Open the cold-start provider setup wizard on the welcome screen.
     OpenSetupWizard,
+    /// Validate, persist, and reconnect using the provider setup wizard.
+    SubmitSetupWizard(crate::setup_wizard::SetupWizardSubmission),
     /// User pressed login on the welcome screen.
     Login,
     /// Cancel an in-progress login that was started from inside a session
@@ -1517,6 +1519,13 @@ pub enum Effect {
     /// Runs off the render path via `spawn_blocking`. Result is cached
     /// on `AppView` so `/release-notes` and the welcome screen share it.
     FetchChangelog,
+    /// Validate and persist the provider wizard, then reconnect ACP so the
+    /// running pager picks up any transient env export.
+    SubmitSetupWizard {
+        submission: crate::setup_wizard::SetupWizardSubmission,
+        connect_flags: crate::acp::ConnectFlags,
+        use_leader: bool,
+    },
     /// Persist the hidden announcement ids to disk.
     PersistAnnouncementsHidden {
         hidden_ids: std::collections::BTreeSet<String>,
@@ -2086,6 +2095,10 @@ pub enum TaskResult {
     WorktreeSessionFailed {
         agent_id: AgentId,
         error: String,
+    },
+    /// Provider setup wizard validation/persist/reconnect finished.
+    SetupWizardSubmitComplete {
+        result: Result<crate::setup_wizard::SetupWizardCompletion, String>,
     },
     /// Session was loaded (resumed) successfully.
     SessionLoaded {
