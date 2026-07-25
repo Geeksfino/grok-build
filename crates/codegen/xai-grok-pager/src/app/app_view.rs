@@ -643,8 +643,9 @@ pub struct AppView {
     /// Whether the plugin marketplace CTA is enabled. Env `GROK_PLUGIN_CTA`
     /// overrides `RemoteSettings.plugin_cta` (remote settings); defaults to `false`.
     pub plugin_cta_enabled: bool,
-    /// Whether the `/usage` slash command is available. Hidden for team
-    /// (`team_name.is_some()`) and API-key auth.
+    /// Whether the `/usage` slash command is available. Hidden until the pager
+    /// has authenticated session metadata, and also hidden for team
+    /// (`team_name.is_some()`), API-key auth, or while provider setup is open.
     pub usage_visible: bool,
     /// Slash commands denied for the current subscription tier
     /// ([`TIER_RESTRICTED_COMMANDS`] when the user is on the free / X Basic
@@ -966,6 +967,10 @@ pub struct AppView {
     pub auth_use_oauth: bool,
     /// Whether the last clipboard copy during auth succeeded.
     pub auth_clipboard_copied: bool,
+    /// Whether the shell has supplied authenticated session metadata for the
+    /// current user. Cold start/provider-wizard flows keep this false so
+    /// billing and SuperGrok CTAs stay hidden.
+    pub has_authenticated_session: bool,
     /// Team principal UUID from auth (`None` for personal sessions).
     pub team_id: Option<String>,
     /// Team name from auth (displayed in the shortcuts bar).
@@ -1105,6 +1110,12 @@ impl AppView {
             && matches!(self.trust_state, TrustState::Done)
             && self.setup_wizard.is_none()
     }
+    pub(crate) fn recompute_usage_visibility(&mut self) {
+        self.usage_visible = self.has_authenticated_session
+            && self.setup_wizard.is_none()
+            && self.team_name.is_none()
+            && !self.is_api_key_auth;
+    }
     /// Extract `GateInfo` from `RemoteSettings`.
     pub fn gate_from_settings(
         rs: &xai_grok_shell::util::config::RemoteSettings,
@@ -1123,6 +1134,7 @@ impl AppView {
     pub fn apply_auth_meta(&mut self, meta: &xai_grok_shell::auth::AuthMeta) {
         self.pending_gate_verification = None;
         let was_gated = self.gate.is_some();
+        self.has_authenticated_session = true;
         self.team_id = meta.team_id.clone();
         self.team_name = meta.team_name.clone();
         self.is_zdr = meta.is_zdr;
@@ -1145,7 +1157,7 @@ impl AppView {
                 .subscription_tier
                 .as_deref()
                 .is_some_and(is_api_key_label);
-        self.usage_visible = meta.team_name.is_none() && !self.is_api_key_auth;
+        self.recompute_usage_visibility();
         self.apply_tier_restrictions();
         if self.is_api_key_auth {
             self.ensure_voice_for_api_key();
@@ -1303,6 +1315,7 @@ impl AppView {
             deferred_startup: Default::default(),
             auth_use_oauth: false,
             auth_clipboard_copied: false,
+            has_authenticated_session: false,
             team_id: None,
             team_name: None,
             is_zdr: false,
@@ -1337,7 +1350,7 @@ impl AppView {
             show_resolved_model: true,
             sharing_enabled: false,
             plugin_cta_enabled: false,
-            usage_visible: true,
+            usage_visible: false,
             tier_restricted_commands: Vec::new(),
             leader_mode: false,
             credit_balance: None,
@@ -5163,6 +5176,7 @@ pub(crate) mod tests {
             deferred_startup: Default::default(),
             auth_use_oauth: false,
             auth_clipboard_copied: false,
+            has_authenticated_session: false,
             team_id: None,
             team_name: None,
             is_zdr: false,
@@ -5250,7 +5264,7 @@ pub(crate) mod tests {
             show_resolved_model: true,
             sharing_enabled: false,
             plugin_cta_enabled: false,
-            usage_visible: true,
+            usage_visible: false,
             tier_restricted_commands: Vec::new(),
             leader_mode: true,
             credit_balance: None,
@@ -6363,9 +6377,23 @@ pub(crate) mod tests {
         assert_eq!(counts.get("t_seen"), Some(&2));
     }
     #[test]
+    fn cold_start_without_auth_meta_hides_usage_upsell() {
+        let mut app = test_app();
+        assert!(
+            !app.usage_visible,
+            "cold start without auth metadata must hide billing upsells"
+        );
+
+        app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+        assert!(
+            !app.usage_visible,
+            "provider setup must keep billing upsells hidden"
+        );
+    }
+    #[test]
     fn apply_auth_meta_hides_usage_for_team_users() {
         let mut app = test_app();
-        assert!(app.usage_visible);
+        assert!(!app.usage_visible);
         let meta = xai_grok_shell::auth::AuthMeta {
             team_id: Some("team-uuid".into()),
             team_name: Some("Acme Corp".into()),

@@ -1002,6 +1002,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             app.welcome_prompt_focused = false;
             app.auth_state = AuthState::Done;
             app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+            app.recompute_usage_visibility();
             vec![]
         }
         Action::SubmitSetupWizard(submission) => {

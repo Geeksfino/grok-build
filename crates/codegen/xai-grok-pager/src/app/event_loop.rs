@@ -728,13 +728,11 @@ pub(crate) async fn run(
         }
     } else {
         // No cached session — check if the API key is the active credential.
+        app.has_authenticated_session = false;
         app.is_api_key_auth = app.auth_methods.iter().any(|m| {
             m.id().0.as_ref() == xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID
         });
-        // No AuthMeta on this path — hide `/usage` for API keys.
-        if app.is_api_key_auth {
-            app.usage_visible = false;
-        }
+        app.recompute_usage_visibility();
     }
 
     // After auth so API-key + managed policy resolve correctly.
@@ -1812,11 +1810,12 @@ pub(crate) async fn run(
                                     ),
                                 }
                             } else {
+                                app.has_authenticated_session = false;
                                 app.is_api_key_auth = app.auth_methods.iter().any(|m| {
                                     m.id().0.as_ref()
                                         == xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID
                                 });
-                                app.usage_visible = !app.is_api_key_auth && app.team_name.is_none();
+                                app.recompute_usage_visibility();
                             }
                         }
                         let effs = dispatch::dispatch(Action::TaskComplete(result), &mut app);

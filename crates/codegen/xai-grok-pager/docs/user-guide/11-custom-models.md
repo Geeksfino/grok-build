@@ -4,9 +4,20 @@ Grok connects to custom model endpoints for alternative providers, self-hosted m
 
 ---
 
+## First Run
+
+Fresh installs start provider-neutral. Run the provider wizard to choose a preset or enter a custom endpoint:
+
+```bash
+grok provider
+```
+
+The wizard writes your selection to `~/.grok/config.toml` under `[models]` and `[model.*]`.
+`grok setup` remains the managed team-configuration command; it does not replace the provider wizard.
+
 ## Default Models
 
-By default, Grok uses models hosted by SpaceXAI, and new sessions start with `grok-build`. Default models require no configuration. Authenticate with `grok login` or an API key, then start a session.
+If you choose the SpaceXAI preset, new sessions start with `grok-build` unless you override the default model in config.
 
 List all available models:
 
@@ -95,7 +106,7 @@ Grok resolves the API key in this order:
 
 1. The `api_key` field in the model config
 2. The environment variable(s) named by `env_key` — a single string or an array of names. The first set, non-empty value wins (for example `env_key = ["ANTHROPIC_AUTH_TOKEN", "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding)
-3. Your signed-in session token (from `grok login`), for a model with no `api_key`/`env_key` of its own
+3. A stored first-party session token in `~/.grok/auth.json` (when available), for a model with no `api_key`/`env_key` of its own
 4. The `XAI_API_KEY` environment variable (global fallback; Grok also accepts `GROK_CODE_XAI_API_KEY` for backward compatibility)
 
 ### Context Window
@@ -273,7 +284,7 @@ When you use `[endpoints]` with partial model overrides, Grok inherits the `base
 
 ### Auth Behavior
 
-When you set `models_base_url`, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. You do not need `grok login` -- the API key is enough.
+When you set `models_base_url`, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. You do not need browser/session login for that endpoint -- the API key is enough.
 
 ---
 

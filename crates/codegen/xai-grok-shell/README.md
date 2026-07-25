@@ -23,7 +23,7 @@ grok agent stdio
 ## Contents
 
 - [Installation](#installation)
-- [Authentication](#authentication) — browser login, API key, OIDC, external auth providers
+- [Authentication](#authentication) — provider wizard, API key, OIDC, external auth providers
 - **Using Grok**
   - [Interactive TUI](#interactive-tui) — shortcuts, slash commands, file references
   - [Headless Mode](#headless-mode) — scripting, CI/CD, output formats
@@ -81,22 +81,24 @@ grok update
 
 ## Authentication
 
-### Browser Login (Default)
+### First Run (Default)
 
-On first launch, Grok opens your browser to authenticate with grok.com:
+Fresh installs are provider-neutral. Run `grok` to open the provider wizard automatically, or start it directly:
 
 ```bash
-grok
+grok provider
 ```
 
-Credentials are stored in `~/.grok/auth.json` and persist across sessions. Tokens expire after 7 days; Grok will prompt you to re-authenticate when needed.
+Choose a preset or enter a custom endpoint. Grok writes the result to `~/.grok/config.toml` under `[models]` and `[model.*]`.
 
-### Re-authenticate
+> `grok setup` remains the managed team-configuration command. It does not replace the provider wizard.
 
-To switch accounts or fix authentication issues:
+### Reconfigure Provider
+
+To switch providers or fix a local/API-key configuration:
 
 ```bash
-grok login
+grok provider
 ```
 
 ### API Key
@@ -108,7 +110,7 @@ export XAI_API_KEY="xai-..."
 grok
 ```
 
-The API key takes precedence over browser credentials.
+The API key takes precedence over any stored session credentials.
 
 ### OIDC (Customer SSO)
 
@@ -311,7 +313,7 @@ export GROK_AUTH_EARLY_INVALIDATION_SECS=300
 ```
 
 **Keep in mind:**
-- When using `auth_provider_command`, you don't need to run `grok login` before starting — Grok runs your binary automatically on first launch. You _can_ run `grok login` to explicitly hydrate `auth.json` ahead of time if you prefer.
+- When using `auth_provider_command`, you don't need a separate login command before starting — Grok runs your binary automatically on first launch and stores the resulting token in `auth.json`.
 - If both OIDC and `auth_provider_command` are configured: at **login** time, Grok tries OIDC silent refresh first (if a `refresh_token` exists), then the external binary, then browser-based login. During a **session**, whichever method is configured is used exclusively — if `auth_provider_command` is set it handles all mid-session refreshes; otherwise OIDC silent refresh is used.
 - Your binary's stderr output is displayed to the user but interactive stdin is not supported. This works well for browser-based SSO flows where the binary displays a URL and you complete authentication in the browser.
 
@@ -336,7 +338,7 @@ Common log messages:
 
 ### Using auth.json for API Access
 
-If you've authenticated with `grok login`, you can use the stored credentials to call the CLI chat proxy directly via curl. The proxy requires specific headers that mirror what the grok CLI sends internally:
+If you already have a first-party session token in `~/.grok/auth.json` (for example from a managed browser/OIDC flow), you can use the stored credentials to call the CLI chat proxy directly via curl. The proxy requires specific headers that mirror what the grok CLI sends internally:
 
 ```bash
 curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
@@ -355,7 +357,7 @@ curl -s -N -X POST "https://cli-chat-proxy.grok.com/v1/chat/completions" \
 
 | Header                           | Required | Purpose                                                                                                                                                                                   |
 | -------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Authorization: Bearer <token>`  | Yes      | Session token from `~/.grok/auth.json` (set by `grok login`)                                                                                                                              |
+| `Authorization: Bearer <token>`  | Yes      | Session token from `~/.grok/auth.json`                                                                                                                              |
 | `X-XAI-Token-Auth: xai-grok-cli` | Yes      | Tells the auth middleware to validate as a CLI session token                                                                                                                              |
 | `x-grok-model-override: <model>` | Yes\*    | The proxy uses this header (not the JSON body) to route to the correct backend. \*Can be omitted for `grok-build` which is on the default route, but always safe to include. |
 
@@ -367,7 +369,7 @@ Most models behind the proxy only support streaming. Always use `"stream": true`
 | --------------------- | -------------- | ------------ |
 | `grok-build`    | ✅ Supported   | ✅ Supported |
 
-> **Note:** `auth.json` tokens expire after 7 days. Run `grok login` to refresh.
+> **Note:** `auth.json` tokens expire after 7 days. Refresh them through your configured browser/OIDC auth flow.
 
 ---
 
@@ -1852,7 +1854,7 @@ api_key = "my-api-key"
 
 When using `[endpoints]` with partial model overrides, the `base_url` is inherited from the endpoints config — you don't need to specify it in each `[model.*]` section.
 
-**Auth behavior:** When `models_base_url` is set, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. `grok login` is not required — only the API key.
+**Auth behavior:** When `models_base_url` is set, Grok uses API key auth (`Authorization: Bearer`) instead of session auth. First-party login is not required — only the API key.
 
 ---
 
@@ -2506,8 +2508,8 @@ GROK_LOG_FILE=/tmp/grok-debug.log RUST_LOG="info,xai_grok_shell::auth=debug" gro
 ### Authentication fails
 
 ```bash
-# Clear credentials and re-login
-grok login
+# Re-run provider setup for local/API-key configurations
+grok provider
 
 # Debug auth issues — check the log for "auth:" entries
 grok --debug-file /tmp/grok-auth.log -p "hello"

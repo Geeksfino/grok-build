@@ -155,6 +155,7 @@ pub fn render_setup_wizard(
 pub fn apply_setup_wizard_success(app: &mut AppView, post_setup_notice: Option<String>) {
     app.setup_wizard = None;
     app.auth_state = AuthState::Done;
+    app.recompute_usage_visibility();
     app.welcome_prompt_focused = !app.is_access_blocked();
     if let Some(message) = post_setup_notice {
         app.startup_warnings.push(crate::startup::StartupWarning {
