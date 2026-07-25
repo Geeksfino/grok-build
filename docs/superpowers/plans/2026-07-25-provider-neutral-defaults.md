@@ -510,7 +510,7 @@ Writer algorithm (mirror `config_toml_edit::read_config_document_for_edit`):
 3. Set `doc["auth"]["preferred_method"] = "api_key"`
 4. Set `doc["models"]["default"] = catalog_id`
 5. Set `doc["model"][catalog_id]` fields (`model`, `base_url`, `name`, `api_backend`, optional `env_key`/`api_key`/`auth_not_required`/`extra_headers`)
-6. Atomic write (temp file + rename), matching shell `atomic_write_string` if accessible; otherwise `std::fs::write` acceptable for v1 with a TODO comment only if atomic helper is awkward to call — prefer calling shell’s atomic helper when public.
+6. Atomic write via temp file + `rename` (copy the small helper pattern from `xai-grok-shell` `util/config/persist.rs` `atomic_write_string` into `provider_config_write.rs` if the shell helper is not publicly reachable).
 
 Register modules in `lib.rs`:
 
