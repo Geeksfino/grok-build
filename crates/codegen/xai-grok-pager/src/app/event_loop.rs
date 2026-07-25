@@ -635,8 +635,15 @@ pub(crate) async fn run(
     // Seed auth state from ACP connection metadata.
     // --force-login overrides: show the login screen even when credentials exist.
     let force_login = args.force_login && !connection.auth_methods.is_empty();
-    let needs_interactive_login = connection.needs_login || force_login;
-    if needs_interactive_login {
+    let needs_provider_setup =
+        crate::setup_wizard::cold_start_needs_provider_setup(&connection.auth_methods, force_login);
+    let needs_interactive_login = !needs_provider_setup && (connection.needs_login || force_login);
+    if needs_provider_setup {
+        tracing::info!(
+            methods_empty = connection.auth_methods.is_empty(),
+            "auto-opening provider setup at startup"
+        );
+    } else if needs_interactive_login {
         app.welcome_prompt_focused = false;
 
         if connection.needs_login {
@@ -679,8 +686,6 @@ pub(crate) async fn run(
         // Skip the login splash screen — auto-trigger login immediately
         // by reusing dispatch_login. Effects are stashed and drained after
         // the initial render so the user sees the auth UI right away.
-        // Empty auth_methods (preferred_method pin with no credentials) is
-        // fail-closed: do not invent grok.com / auto-start OIDC.
         tracing::info!(
             method_id = ?app.login_method_id,
             methods_empty = connection.auth_methods.is_empty(),
@@ -690,15 +695,13 @@ pub(crate) async fn run(
     // else: auth_state defaults to Done (already authenticated eagerly)
     // Effects stashed until after the initial render, so the user sees the
     // welcome/auth UI right away.
-    let mut post_render_effects = if needs_interactive_login {
+    let mut post_render_effects = if needs_provider_setup {
+        dispatch::dispatch(Action::OpenSetupWizard, &mut app)
+    } else if needs_interactive_login {
         if connection.auth_methods.is_empty() {
-            // preferred_method pin unavailable — no advertised method to start.
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
-                ),
-            };
-            vec![]
+            // Defensive fallback: an inconsistent empty-methods login path should
+            // still route to provider setup rather than inventing login UX.
+            dispatch::dispatch(Action::OpenSetupWizard, &mut app)
         } else {
             dispatch::dispatch(Action::Login, &mut app)
         }

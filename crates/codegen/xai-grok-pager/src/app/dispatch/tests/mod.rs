@@ -137,6 +137,7 @@ fn test_app() -> AppView {
             "Grok".to_string(),
         ))],
         auth_state: AuthState::Done,
+        setup_wizard: None,
         trust_state: TrustState::Done,
         login_label: None,
         login_method_id: None,

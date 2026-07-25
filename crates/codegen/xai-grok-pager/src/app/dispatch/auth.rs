@@ -200,6 +200,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;
     app.auth_code_input.clear();
+    app.setup_wizard = None;
     app.auth_state = AuthState::Authenticating {
         request_seq,
         handle: None,

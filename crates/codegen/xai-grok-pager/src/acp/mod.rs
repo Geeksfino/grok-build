@@ -651,8 +651,8 @@ pub fn find_interactive_login_method(
 /// unpinned fallthrough; a failed api_key must not open a browser). Otherwise
 /// hand the interactive method for the login screen.
 ///
-/// Empty `auth_methods` (e.g. `preferred_method=api_key` with no key) is
-/// fail-closed: needs_login without an interactive method.
+/// Empty `auth_methods` at cold start should fall through so the welcome flow
+/// can open provider setup instead of inventing an interactive login method.
 ///
 /// Returns `(needs_login, login_label, login_method_id, auth_start_mode, auth_meta)`.
 async fn eager_auth_or_login_fallback(
@@ -671,8 +671,7 @@ async fn eager_auth_or_login_fallback(
     Option<serde_json::Value>,
 ) {
     if auth_methods.is_empty() {
-        // preferred_method pin unavailable — fail closed, no invented method.
-        return (true, None, None, AuthStartMode::Pending, None);
+        return (false, None, None, AuthStartMode::Pending, None);
     }
     if needs_login {
         return (
@@ -851,6 +850,29 @@ mod tests {
         assert!(label.is_none());
         assert!(method_id.is_none());
         assert_eq!(mode, AuthStartMode::Pending);
+    }
+
+    #[tokio::test]
+    async fn eager_auth_empty_methods_stays_out_of_login_flow() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (needs, label, method_id, mode, auth_meta) = eager_auth_or_login_fallback(
+            &tx,
+            &[],
+            None,
+            false,
+            None,
+            None,
+            AuthStartMode::Pending,
+        )
+        .await;
+        assert!(
+            !needs,
+            "empty auth methods should fall through to provider setup, not mark login required"
+        );
+        assert!(label.is_none());
+        assert!(method_id.is_none());
+        assert_eq!(mode, AuthStartMode::Pending);
+        assert!(auth_meta.is_none());
     }
 
     #[test]

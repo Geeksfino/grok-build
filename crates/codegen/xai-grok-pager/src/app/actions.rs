@@ -598,6 +598,8 @@ pub enum Action {
     Logout,
     /// Log out and immediately start a new login flow.
     SwitchAccount,
+    /// Open the cold-start provider setup wizard on the welcome screen.
+    OpenSetupWizard,
     /// User pressed login on the welcome screen.
     Login,
     /// Cancel an in-progress login that was started from inside a session

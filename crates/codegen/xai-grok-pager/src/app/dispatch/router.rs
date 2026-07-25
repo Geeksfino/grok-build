@@ -998,6 +998,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             open_url_or_show(app, &url);
             vec![]
         }
+        Action::OpenSetupWizard => {
+            app.welcome_prompt_focused = false;
+            app.auth_state = AuthState::Done;
+            app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+            vec![]
+        }
         Action::OpenNextLink => {
             with_active_agent(app, |agent| agent.cycle_highlighted_link(true));
             vec![]

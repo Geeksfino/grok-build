@@ -941,6 +941,8 @@ pub struct AppView {
     pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
     pub auth_state: AuthState,
+    /// Cold-start provider setup wizard state.
+    pub setup_wizard: Option<crate::setup_wizard::SetupWizardState>,
     /// Folder-trust state for the welcome screen. Mirrors [`AppView::auth_state`]:
     /// when `Pending`, the welcome screen shows the trust question and session
     /// creation is deferred (gated after auth) until it is answered.
@@ -1283,6 +1285,7 @@ impl AppView {
             bootstrap_acp_commands,
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
+            setup_wizard: None,
             trust_state: TrustState::Done,
             login_label: None,
             login_method_id: None,
@@ -5118,6 +5121,7 @@ pub(crate) mod tests {
             bootstrap_acp_commands: Vec::new(),
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
+            setup_wizard: None,
             trust_state: TrustState::Done,
             login_label: None,
             login_method_id: None,
