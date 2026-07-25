@@ -1773,6 +1773,62 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::SubmitSetupWizard {
+            submission,
+            connect_flags,
+            use_leader,
+        } => {
+            tasks
+                .spawn(async move {
+                    let crate::setup_wizard::SetupWizardSubmission {
+                        validate,
+                        write,
+                        post_setup_notice,
+                    } = submission;
+                    let result = async move {
+                        crate::setup_wizard::validate::validate_provider_endpoint(&validate)
+                            .await
+                            .map_err(|e| sanitize_user_error(&e.to_string()))?;
+
+                        let config_path =
+                            xai_grok_shell::util::grok_home::grok_home().join("config.toml");
+                        tokio::task::spawn_blocking(move || {
+                            crate::provider_config_write::write_provider_model_config(
+                                &config_path,
+                                &write,
+                            )
+                        })
+                        .await
+                        .map_err(|e| sanitize_user_error(&format!(
+                            "provider config write task failed: {e}"
+                        )))?
+                        .map_err(|e| sanitize_user_error(&e.to_string()))?;
+
+                        let cancel = tokio_util::sync::CancellationToken::new();
+                        let connection = if use_leader {
+                            let raw_config = xai_grok_shell::config::load_effective_config()
+                                .map_err(|e| sanitize_user_error(&format!(
+                                    "failed to reload config for reconnect: {e}"
+                                )))?;
+                            crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config)
+                                .await
+                                .map_err(|e| sanitize_user_error(&e.to_string()))?
+                        } else {
+                            crate::acp::connect(&cancel, connect_flags)
+                                .await
+                                .map_err(|e| sanitize_user_error(&e.to_string()))?
+                        };
+
+                        Ok(crate::setup_wizard::SetupWizardCompletion {
+                            connection: Some(connection),
+                            post_setup_notice,
+                        })
+                    }
+                    .await;
+
+                    TaskResult::SetupWizardSubmitComplete { result }
+                });
+        }
         Effect::PersistAnnouncementsHidden { hidden_ids } => {
             tasks
                 .spawn(async move {
@@ -3914,13 +3970,11 @@ pub(crate) fn execute(
                                 &store,
                                 &scope,
                             )?;
-                            let proxy_base = std::env::var(
-                                    "GROK_CLI_CHAT_PROXY_BASE_URL",
-                                )
-                                .unwrap_or_else(|_| {
-                                    xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT
-                                        .to_owned()
-                                });
+                            let proxy_base = xai_grok_shell::agent::config::EndpointsConfig::from_effective_config()
+                                .proxy_url();
+                            if proxy_base.is_empty() {
+                                return None;
+                            }
                             xai_grok_shell::remote::fetch_settings_blocking(
                                 &proxy_base,
                                 &auth,

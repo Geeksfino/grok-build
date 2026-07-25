@@ -998,6 +998,20 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             open_url_or_show(app, &url);
             vec![]
         }
+        Action::OpenSetupWizard => {
+            app.welcome_prompt_focused = false;
+            app.auth_state = AuthState::Done;
+            app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+            app.recompute_usage_visibility();
+            vec![]
+        }
+        Action::SubmitSetupWizard(submission) => {
+            vec![Effect::SubmitSetupWizard {
+                submission,
+                connect_flags: app.connect_flags.clone(),
+                use_leader: app.leader_mode,
+            }]
+        }
         Action::OpenNextLink => {
             with_active_agent(app, |agent| agent.cycle_highlighted_link(true));
             vec![]

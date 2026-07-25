@@ -63,6 +63,7 @@
     #[test]
     fn settings_non_api_key_tier_clears_stale_api_key_flag() {
         let mut app = make_app_with_agent("sess-stale-key");
+        app.has_authenticated_session = true;
         assert!(handle_ext_notification(
             &tier_settings_update("API Key"),
             &mut app
@@ -84,6 +85,7 @@
 
         // Paid tier after API Key must not force voice off (omit voice field).
         let mut app = make_app_with_agent("sess-paid-keep-voice");
+        app.has_authenticated_session = true;
         assert!(handle_ext_notification(
             &tier_settings_update("API Key"),
             &mut app

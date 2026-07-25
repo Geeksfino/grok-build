@@ -122,7 +122,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         let was_api_key = app.is_api_key_auth;
         let is_key = super::super::app_view::is_api_key_label(&v);
         app.is_api_key_auth = is_key;
-        app.usage_visible = !is_key && app.team_name.is_none();
+        app.recompute_usage_visibility();
         app.subscription_tier = Some(v);
         app.apply_tier_restrictions();
         // Leaving API Key → free/X Basic without a voice field: drop force-on.

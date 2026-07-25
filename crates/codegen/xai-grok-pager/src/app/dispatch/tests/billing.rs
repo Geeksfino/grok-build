@@ -991,6 +991,29 @@ fn restricted_command_alias_also_upsells() {
     assert!(app.agents[&id].question_view.is_some(), "upsell must open");
 }
 
+/// Regression: cold-start / BYOK users without a first-party authenticated
+/// session must never hit the SuperGrok restricted-command upsell path.
+#[test]
+fn restricted_command_without_authenticated_session_does_not_open_upsell() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.has_authenticated_session = false;
+    app.subscription_tier = Some("Free".into());
+    app.apply_tier_restrictions();
+
+    let effects = dispatch(Action::SendPrompt("/imagine a sunset".into()), &mut app);
+
+    assert!(
+        app.agents[&id].question_view.is_none(),
+        "cold-start users must not see the SuperGrok upsell modal"
+    );
+    assert_eq!(effects.len(), 1, "slash text should pass through without a modal");
+    assert!(
+        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/imagine a sunset"),
+        "restricted-command guard should stay disabled without a first-party session: {effects:?}"
+    );
+}
+
 /// A restricted submit while ANOTHER question modal is already open
 /// must not silently drop the typed text — the upsell can't open (the guard
 /// never displaces a modal), so the composer keeps the text for a resubmit

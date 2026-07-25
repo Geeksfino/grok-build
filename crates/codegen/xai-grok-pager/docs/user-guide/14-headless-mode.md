@@ -453,7 +453,7 @@ Key environment variables that affect headless mode:
 
 | Variable                        | Description                                                   |
 | ------------------------------- | ------------------------------------------------------------- |
-| `XAI_API_KEY`        | API key for authentication (required when no browser login)   |
+| `XAI_API_KEY`        | API key for authentication (recommended for CI/headless runs; can also be referenced from `config.toml`) |
 | `GROK_HOME`                    | Override config directory (default: `~/.grok`)                |
 | `GROK_LOG_FILE`                | Path to a log file (used verbatim as the path; works in headless and TUI, honors `RUST_LOG`) |
 | `RUST_LOG`                     | Log level filter (e.g. `debug`). Headless logs to stderr.     |
@@ -480,14 +480,15 @@ grok -p "Run the test suite" --yolo
 
 ## Authentication for Headless Environments
 
-For headless use, authenticate with one of:
+For headless use, prefer non-interactive provider or API-key configuration:
 
 - **`XAI_API_KEY`** — simplest for CI. See [Environment Variables](#environment-variables-for-headless) above.
-- **`grok login --device-auth`** (or `--device-code`) — no browser needed on the target machine.
-  See [Authentication > Device Code Flow](02-authentication.md#device-code-flow).
-- **`grok login`** — browser-based OAuth2 on machines with a GUI.
+- **`grok provider`** — writes provider/model settings to `~/.grok/config.toml` before you invoke `grok -p ...`.
+- **Direct `~/.grok/config.toml` edits** — configure `[models]` and `[model.<name>]` entries, including `api_key` or `env_key`, when you need custom endpoints or checked-in automation bootstrap.
 
-If you've previously logged in, cached credentials are used automatically.
+If your organization uses managed configuration, **`grok setup`** remains the team-managed bootstrap path. It is distinct from provider selection for unmanaged installs.
+
+If credentials are already configured in `~/.grok/config.toml` or the environment, headless runs reuse them automatically.
 
 ---
 

@@ -1,0 +1,8 @@
+Status: implemented cold-start provider setup gating so empty auth methods route to setup wizard state instead of startup login.
+Tests: red/green covered `empty_auth_methods_request_provider_setup_not_login`, `eager_auth_empty_methods_stays_out_of_login_flow`, and `open_setup_wizard_sets_cold_start_state`; broader verification ran `cargo test -p xai-grok-pager startup_auth -- --nocapture && cargo test -p xai-grok-pager login_with_empty_auth_methods_fails_closed -- --nocapture && cargo test -p xai-grok-pager open_setup_wizard_sets_cold_start_state -- --nocapture`.
+Concerns: `SetupWizardState` is intentionally a minimal stub in Task 6; Task 7 still needs the actual wizard UI/rendering.
+Commit: feat: open provider setup wizard on cold start
+
+Status: fixed Task 6 review findings by blocking `session_startup_allowed()` while `setup_wizard` is open and pre-seeding wizard state before first paint on cold start.
+Tests: verified red/green on `session_startup_allowed_requires_auth_trust_and_no_setup_wizard`; focused verification ran `cargo test -p xai-grok-pager empty_auth_methods_request_provider_setup_not_login -- --nocapture && cargo test -p xai-grok-pager eager_auth_empty_methods_stays_out_of_login_flow -- --nocapture && cargo test -p xai-grok-pager startup_auth -- --nocapture && cargo test -p xai-grok-pager login_with_empty_auth_methods_fails_closed -- --nocapture && cargo test -p xai-grok-pager open_setup_wizard_sets_cold_start_state -- --nocapture && cargo test -p xai-grok-pager session_startup_allowed_requires_auth_trust_and_no_setup_wizard -- --nocapture`.
+Commit: fix: block session startup while provider setup wizard open

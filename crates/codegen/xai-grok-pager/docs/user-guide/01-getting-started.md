@@ -56,22 +56,32 @@ Start Grok by running:
 grok
 ```
 
-On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+Fresh installs are provider-neutral. On first launch, Grok opens the provider wizard instead of a browser login so you can choose a preset or enter a custom endpoint. You can also launch the wizard directly:
 
-If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
+```bash
+grok provider
+```
+
+The wizard writes your selection to `~/.grok/config.toml` under `[models]` and `[model.*]`.
+
+`grok login` is disabled in this build. To switch providers later, run `grok provider` again or edit `~/.grok/config.toml` directly.
+
+`grok setup` remains the managed team-configuration command. It does not replace the provider wizard.
+
+If you want to skip the wizard and use xAI via API key (for example in CI/CD), set the `XAI_API_KEY` environment variable before launching:
 
 ```bash
 export XAI_API_KEY="xai-..."
 grok
 ```
 
-See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
+See [Authentication](02-authentication.md) for config-based credentials, external auth providers, and advanced auth precedence details.
 
 ---
 
 ## Basic Interaction
 
-Once authenticated, Grok presents a full-screen TUI with two main areas:
+Once a provider is configured, Grok presents a full-screen TUI with two main areas:
 
 - **Scrollback** -- the conversation history showing your prompts, Grok's responses, tool calls, file edits, and more.
 - **Prompt** -- the input area at the bottom where you type messages.

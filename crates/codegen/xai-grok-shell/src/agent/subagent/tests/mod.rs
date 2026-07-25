@@ -3116,6 +3116,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
         },
         api_key: None,
         env_key: None,
+        auth_not_required: false,
         api_base_url: None,
     }
 }

@@ -643,8 +643,9 @@ pub struct AppView {
     /// Whether the plugin marketplace CTA is enabled. Env `GROK_PLUGIN_CTA`
     /// overrides `RemoteSettings.plugin_cta` (remote settings); defaults to `false`.
     pub plugin_cta_enabled: bool,
-    /// Whether the `/usage` slash command is available. Hidden for team
-    /// (`team_name.is_some()`) and API-key auth.
+    /// Whether the `/usage` slash command is available. Hidden until the pager
+    /// has authenticated session metadata, and also hidden for team
+    /// (`team_name.is_some()`), API-key auth, or while provider setup is open.
     pub usage_visible: bool,
     /// Slash commands denied for the current subscription tier
     /// ([`TIER_RESTRICTED_COMMANDS`] when the user is on the free / X Basic
@@ -937,10 +938,15 @@ pub struct AppView {
     /// an `AvailableCommandsUpdate` that includes skills, so subsequent
     /// sessions start with the full command catalog immediately.
     pub bootstrap_acp_commands: Vec<agent_client_protocol::AvailableCommand>,
+    /// Launch-time ACP connection flags reused when the setup wizard reconnects
+    /// the pager after persisting provider configuration.
+    pub connect_flags: crate::acp::ConnectFlags,
     /// Auth methods from the ACP connection (preserved for re-login after logout).
     pub auth_methods: Vec<acp::AuthMethod>,
     /// Authentication state for the welcome screen login flow.
     pub auth_state: AuthState,
+    /// Cold-start provider setup wizard state.
+    pub setup_wizard: Option<crate::setup_wizard::SetupWizardState>,
     /// Folder-trust state for the welcome screen. Mirrors [`AppView::auth_state`]:
     /// when `Pending`, the welcome screen shows the trust question and session
     /// creation is deferred (gated after auth) until it is answered.
@@ -961,6 +967,10 @@ pub struct AppView {
     pub auth_use_oauth: bool,
     /// Whether the last clipboard copy during auth succeeded.
     pub auth_clipboard_copied: bool,
+    /// Whether the shell has supplied authenticated session metadata for the
+    /// current user. Cold start/provider-wizard flows keep this false so
+    /// billing and SuperGrok CTAs stay hidden.
+    pub has_authenticated_session: bool,
     /// Team principal UUID from auth (`None` for personal sessions).
     pub team_id: Option<String>,
     /// Team name from auth (displayed in the shortcuts bar).
@@ -1092,9 +1102,37 @@ impl AppView {
     /// Whether deferred session-startup actions may run: both auth AND folder
     /// trust must be resolved. Mirrors the auth gate at the session-creating
     /// startup sites; trust is gated AFTER auth so a pending trust question
-    /// defers session creation until answered.
+    /// defers session creation until answered. Cold-start provider setup uses
+    /// the same chokepoint so CLI/dashboard/session startup stays deferred
+    /// until the wizard closes.
     pub fn session_startup_allowed(&self) -> bool {
-        matches!(self.auth_state, AuthState::Done) && matches!(self.trust_state, TrustState::Done)
+        matches!(self.auth_state, AuthState::Done)
+            && matches!(self.trust_state, TrustState::Done)
+            && self.setup_wizard.is_none()
+    }
+    pub(crate) fn recompute_usage_visibility(&mut self) {
+        self.usage_visible = self.has_authenticated_session
+            && self.setup_wizard.is_none()
+            && self.team_name.is_none()
+            && !self.is_api_key_auth;
+    }
+    /// Clear auth-meta-derived first-party billing, team, and gate state.
+    pub(crate) fn clear_authenticated_session_state(&mut self) {
+        self.has_authenticated_session = false;
+        self.team_id = None;
+        self.team_name = None;
+        self.is_zdr = false;
+        self.team_role = None;
+        self.coding_data_retention_opt_out = false;
+        self.access_gate_shown_logged = false;
+        self.announcement_cta_impressions_logged.clear();
+        self.gate = None;
+        self.pending_gate_verification = None;
+        self.subscription_tier = None;
+        self.paywall_check_started = None;
+        self.last_subscription_check_at = None;
+        self.recompute_usage_visibility();
+        self.apply_tier_restrictions();
     }
     /// Extract `GateInfo` from `RemoteSettings`.
     pub fn gate_from_settings(
@@ -1114,6 +1152,7 @@ impl AppView {
     pub fn apply_auth_meta(&mut self, meta: &xai_grok_shell::auth::AuthMeta) {
         self.pending_gate_verification = None;
         let was_gated = self.gate.is_some();
+        self.has_authenticated_session = true;
         self.team_id = meta.team_id.clone();
         self.team_name = meta.team_name.clone();
         self.is_zdr = meta.is_zdr;
@@ -1136,7 +1175,7 @@ impl AppView {
                 .subscription_tier
                 .as_deref()
                 .is_some_and(is_api_key_label);
-        self.usage_visible = meta.team_name.is_none() && !self.is_api_key_auth;
+        self.recompute_usage_visibility();
         self.apply_tier_restrictions();
         if self.is_api_key_auth {
             self.ensure_voice_for_api_key();
@@ -1281,8 +1320,10 @@ impl AppView {
             restore_code: None,
             agent_override: None,
             bootstrap_acp_commands,
+            connect_flags: crate::acp::ConnectFlags::default(),
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
+            setup_wizard: None,
             trust_state: TrustState::Done,
             login_label: None,
             login_method_id: None,
@@ -1292,6 +1333,7 @@ impl AppView {
             deferred_startup: Default::default(),
             auth_use_oauth: false,
             auth_clipboard_copied: false,
+            has_authenticated_session: false,
             team_id: None,
             team_name: None,
             is_zdr: false,
@@ -1326,7 +1368,7 @@ impl AppView {
             show_resolved_model: true,
             sharing_enabled: false,
             plugin_cta_enabled: false,
-            usage_visible: true,
+            usage_visible: false,
             tier_restricted_commands: Vec::new(),
             leader_mode: false,
             credit_balance: None,
@@ -1429,7 +1471,8 @@ impl AppView {
     /// `x.ai/settings/update` handler when the subscription tier changes, so
     /// a mid-session upgrade lifts the restrictions without a restart.
     pub fn apply_tier_restrictions(&mut self) {
-        let restricted = self.team_name.is_none()
+        let restricted = self.has_authenticated_session
+            && self.team_name.is_none()
             && !self.is_api_key_auth
             && is_restricted_tier(self.subscription_tier.as_deref());
         let names: Vec<String> = if restricted {
@@ -2116,65 +2159,81 @@ impl AppView {
         .is_some_and(|(owner, _, _)| !crate::views::announcements::is_dismissible(owner));
         let has_foreign_resume = self.foreign_resume_hint().is_some();
         let outcome = match self.active_view {
-            ActiveView::Welcome => handle_welcome_input(
-                ev,
-                &mut WelcomeInputCtx {
-                    auth_state: &self.auth_state,
-                    trust_state: &self.trust_state,
-                    cwd: &self.cwd,
-                    mid_session_login: self.auth_return_view.is_some(),
-                    auth_code_input: &mut self.auth_code_input,
-                    prompt: &mut self.welcome_prompt,
-                    prompt_focused: &mut self.welcome_prompt_focused,
-                    new_worktree_dialog: &mut self.new_worktree_dialog,
-                    menu_index: &mut self.welcome_menu_index,
-                    menu_rects: &self.welcome_menu_rects,
-                    menu_count: if zdr_blocked {
-                        2
-                    } else {
-                        3 + if self.has_claude_import { 1 } else { 0 }
-                            + if self.welcome_show_changelog_action {
-                                1
+            ActiveView::Welcome => {
+                if let Some(wizard) = self.setup_wizard.as_mut() {
+                    match crate::setup_wizard::handle_setup_wizard_input(ev, wizard) {
+                        crate::setup_wizard::SetupWizardInputOutcome::Unchanged => {
+                            InputOutcome::Unchanged
+                        }
+                        crate::setup_wizard::SetupWizardInputOutcome::Changed => {
+                            InputOutcome::Changed
+                        }
+                        crate::setup_wizard::SetupWizardInputOutcome::Action(action) => {
+                            InputOutcome::Action(action)
+                        }
+                    }
+                } else {
+                    handle_welcome_input(
+                        ev,
+                        &mut WelcomeInputCtx {
+                            auth_state: &self.auth_state,
+                            trust_state: &self.trust_state,
+                            cwd: &self.cwd,
+                            mid_session_login: self.auth_return_view.is_some(),
+                            auth_code_input: &mut self.auth_code_input,
+                            prompt: &mut self.welcome_prompt,
+                            prompt_focused: &mut self.welcome_prompt_focused,
+                            new_worktree_dialog: &mut self.new_worktree_dialog,
+                            menu_index: &mut self.welcome_menu_index,
+                            menu_rects: &self.welcome_menu_rects,
+                            menu_count: if zdr_blocked {
+                                2
                             } else {
-                                0
-                            }
-                    },
-                    prompt_rect: self.welcome_prompt_rect.as_ref(),
-                    import_banner_rect: self.welcome_import_banner_rect.as_ref(),
-                    auth_url_rect: self.welcome_auth_url_rect.as_ref(),
-                    auth_fallback_rect: self.welcome_auth_fallback_rect.as_ref(),
-                    refresh_rect: self.welcome_refresh_rect.as_ref(),
-                    gate_url_rect: self.welcome_gate_url_rect.as_ref(),
-                    upgrade_cta_rect: self.welcome_upgrade_cta_rect.as_ref(),
-                    on_upgrade_cta: &mut self.welcome_on_upgrade_cta,
-                    upgrade_cta_keyboard: welcome_pinned_upgrade_cta,
-                    changelog_cta_rect: self.welcome_changelog_cta_rect.as_ref(),
-                    on_changelog_cta: &mut self.welcome_on_changelog_cta,
-                    announcement_truncated: self.welcome_announcement.truncated,
-                    announcement_rect: self.welcome_announcement.rect.as_ref(),
-                    on_announcement_cta: &mut self.welcome_announcement.on_cta,
-                    announcement_expanded: &mut self.welcome_announcement.expanded,
-                    show_raw_url: &mut self.auth_show_raw_url,
-                    has_access,
-                    is_zdr_blocked: zdr_blocked,
-                    sp_entries: &mut self.session_picker_entries,
-                    sp_state: &mut self.session_picker_state,
-                    sp_content_results: &self.session_picker_content_results,
-                    sp_content_loading: self.session_picker_content_loading,
-                    sp_entries_query: &self.session_picker_entries_query,
-                    has_claude_import: self.has_claude_import,
-                    import_claude_modal: &mut self.import_claude_modal,
-                    welcome_doc_viewer: &mut self.welcome_doc_viewer,
-                    changelog_markdown: &self.changelog_markdown,
-                    show_changelog_action: self.welcome_show_changelog_action,
-                    has_pending_update: self.pending_update_version.is_some(),
-                    has_foreign_resume,
-                    cwd_has_git_ancestor: self.cwd_has_git_ancestor,
-                    session_picker_grouped: self.session_picker_grouped,
-                    sp_source_filter: &mut self.session_picker_source_filter,
-                    chat_mode: self.chat_mode,
-                },
-            ),
+                                3 + if self.has_claude_import { 1 } else { 0 }
+                                    + if self.welcome_show_changelog_action {
+                                        1
+                                    } else {
+                                        0
+                                    }
+                            },
+                            prompt_rect: self.welcome_prompt_rect.as_ref(),
+                            import_banner_rect: self.welcome_import_banner_rect.as_ref(),
+                            auth_url_rect: self.welcome_auth_url_rect.as_ref(),
+                            auth_fallback_rect: self.welcome_auth_fallback_rect.as_ref(),
+                            refresh_rect: self.welcome_refresh_rect.as_ref(),
+                            gate_url_rect: self.welcome_gate_url_rect.as_ref(),
+                            upgrade_cta_rect: self.welcome_upgrade_cta_rect.as_ref(),
+                            on_upgrade_cta: &mut self.welcome_on_upgrade_cta,
+                            upgrade_cta_keyboard: welcome_pinned_upgrade_cta,
+                            changelog_cta_rect: self.welcome_changelog_cta_rect.as_ref(),
+                            on_changelog_cta: &mut self.welcome_on_changelog_cta,
+                            announcement_truncated: self.welcome_announcement.truncated,
+                            announcement_rect: self.welcome_announcement.rect.as_ref(),
+                            on_announcement_cta: &mut self.welcome_announcement.on_cta,
+                            announcement_expanded: &mut self.welcome_announcement.expanded,
+                            show_raw_url: &mut self.auth_show_raw_url,
+                            has_access,
+                            is_zdr_blocked: zdr_blocked,
+                            sp_entries: &mut self.session_picker_entries,
+                            sp_state: &mut self.session_picker_state,
+                            sp_content_results: &self.session_picker_content_results,
+                            sp_content_loading: self.session_picker_content_loading,
+                            sp_entries_query: &self.session_picker_entries_query,
+                            has_claude_import: self.has_claude_import,
+                            import_claude_modal: &mut self.import_claude_modal,
+                            welcome_doc_viewer: &mut self.welcome_doc_viewer,
+                            changelog_markdown: &self.changelog_markdown,
+                            show_changelog_action: self.welcome_show_changelog_action,
+                            has_pending_update: self.pending_update_version.is_some(),
+                            has_foreign_resume,
+                            cwd_has_git_ancestor: self.cwd_has_git_ancestor,
+                            session_picker_grouped: self.session_picker_grouped,
+                            sp_source_filter: &mut self.session_picker_source_filter,
+                            chat_mode: self.chat_mode,
+                        },
+                    )
+                }
+            }
             ActiveView::Agent(id) => {
                 let overlay_active = self
                     .dashboard
@@ -3960,6 +4019,19 @@ impl AppView {
                                 &theme,
                             );
                         }
+                        let has_cloud_modal = false;
+                        let cursor = if let Some(wizard) = self.setup_wizard.as_ref() {
+                            crate::setup_wizard::render_setup_wizard(
+                                view_area,
+                                f.buffer_mut(),
+                                wizard,
+                            )
+                            .cursor_pos
+                        } else if has_cloud_modal {
+                            None
+                        } else {
+                            result.cursor_pos
+                        };
                         if !has_access && !self.access_gate_shown_logged {
                             self.access_gate_shown_logged = true;
                             xai_grok_telemetry::session_ctx::log_event(
@@ -3979,12 +4051,6 @@ impl AppView {
                         if let Some(panel) = &scroll_debug_panel {
                             panel.render(full_area, f.buffer_mut());
                         }
-                        let has_cloud_modal = false;
-                        let cursor = if has_cloud_modal {
-                            None
-                        } else {
-                            result.cursor_pos
-                        };
                         let on_url = self.welcome_auth_url_rect.as_ref().is_some_and(|r| {
                             matches!(self.auth_state, AuthState::Authenticating { .. })
                                 && self.last_mouse_pos.is_some_and(|(mx, my)| {
@@ -5116,8 +5182,10 @@ pub(crate) mod tests {
             restore_code: None,
             agent_override: None,
             bootstrap_acp_commands: Vec::new(),
+            connect_flags: crate::acp::ConnectFlags::default(),
             auth_methods: Vec::new(),
             auth_state: AuthState::Done,
+            setup_wizard: None,
             trust_state: TrustState::Done,
             login_label: None,
             login_method_id: None,
@@ -5127,6 +5195,7 @@ pub(crate) mod tests {
             deferred_startup: Default::default(),
             auth_use_oauth: false,
             auth_clipboard_copied: false,
+            has_authenticated_session: false,
             team_id: None,
             team_name: None,
             is_zdr: false,
@@ -5214,7 +5283,7 @@ pub(crate) mod tests {
             show_resolved_model: true,
             sharing_enabled: false,
             plugin_cta_enabled: false,
-            usage_visible: true,
+            usage_visible: false,
             tier_restricted_commands: Vec::new(),
             leader_mode: true,
             credit_balance: None,
@@ -6327,9 +6396,23 @@ pub(crate) mod tests {
         assert_eq!(counts.get("t_seen"), Some(&2));
     }
     #[test]
+    fn cold_start_without_auth_meta_hides_usage_upsell() {
+        let mut app = test_app();
+        assert!(
+            !app.usage_visible,
+            "cold start without auth metadata must hide billing upsells"
+        );
+
+        app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+        assert!(
+            !app.usage_visible,
+            "provider setup must keep billing upsells hidden"
+        );
+    }
+    #[test]
     fn apply_auth_meta_hides_usage_for_team_users() {
         let mut app = test_app();
-        assert!(app.usage_visible);
+        assert!(!app.usage_visible);
         let meta = xai_grok_shell::auth::AuthMeta {
             team_id: Some("team-uuid".into()),
             team_name: Some("Acme Corp".into()),
@@ -6346,6 +6429,44 @@ pub(crate) mod tests {
         let meta = xai_grok_shell::auth::AuthMeta::default();
         app.apply_auth_meta(&meta);
         assert!(app.usage_visible);
+    }
+    #[test]
+    fn clear_authenticated_session_state_clears_billing_and_team_state() {
+        let mut app = test_app();
+        advertise_media_tools(&mut app);
+        app.apply_auth_meta(&xai_grok_shell::auth::AuthMeta {
+            team_id: Some("team-uuid".into()),
+            team_name: Some("Acme Corp".into()),
+            subscription_tier: Some("Free".into()),
+            gate: Some(xai_grok_shell::auth::GateInfo {
+                message: "Subscribe".into(),
+                url: None,
+                label: None,
+            }),
+            is_zdr: true,
+            team_role: Some("Admin".into()),
+            coding_data_retention_opt_out: true,
+            ..Default::default()
+        });
+        app.paywall_check_started = Some(std::time::Instant::now());
+        app.last_subscription_check_at = Some(std::time::Instant::now());
+
+        app.clear_authenticated_session_state();
+
+        assert!(!app.has_authenticated_session);
+        assert!(app.team_id.is_none());
+        assert!(app.team_name.is_none());
+        assert!(!app.is_zdr);
+        assert!(app.team_role.is_none());
+        assert!(!app.coding_data_retention_opt_out);
+        assert!(app.gate.is_none());
+        assert!(app.pending_gate_verification.is_none());
+        assert!(app.subscription_tier.is_none());
+        assert!(app.paywall_check_started.is_none());
+        assert!(app.last_subscription_check_at.is_none());
+        assert!(!app.usage_visible);
+        assert!(app.tier_restricted_commands.is_empty());
+        assert!(!app.is_voice_tier_restricted());
     }
     #[test]
     fn apply_auth_meta_clears_api_key_flag_and_shows_usage_on_personal_login() {

@@ -138,6 +138,75 @@ fn foreign_resume_result_rejects_startup_conflict_before_completion() {
 }
 
 #[test]
+fn setup_wizard_submit_complete_success_clears_wizard_and_replays_startup() {
+    let mut app = test_app();
+    app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+
+    let gated = dispatch(Action::NewSession, &mut app);
+    assert!(gated.is_empty(), "wizard-open startup should be deferred");
+    assert!(
+        app.deferred_startup.new_session,
+        "new-session intent must be stashed while setup is open"
+    );
+
+    let notice = "Saved provider config. Exported OPENAI_API_KEY for this run only.".to_string();
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SetupWizardSubmitComplete {
+            result: Ok(crate::setup_wizard::SetupWizardCompletion {
+                connection: None,
+                post_setup_notice: Some(notice.clone()),
+            }),
+        }),
+        &mut app,
+    );
+
+    assert!(
+        app.setup_wizard.is_none(),
+        "wizard should close after success"
+    );
+    assert!(
+        !app.deferred_startup.new_session,
+        "deferred startup should drain once the wizard closes"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::CreateSession { .. })),
+        "startup drain should replay the deferred new-session intent"
+    );
+    assert_eq!(
+        app.startup_warnings
+            .last()
+            .map(|warning| warning.message.as_str()),
+        Some(notice.as_str())
+    );
+}
+
+#[test]
+fn setup_wizard_submit_complete_error_keeps_wizard_open() {
+    let mut app = test_app();
+    app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SetupWizardSubmitComplete {
+            result: Err("Validation failed with 401".into()),
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty(), "failed setup should not drain startup");
+    let wizard = app
+        .setup_wizard
+        .as_ref()
+        .expect("wizard should remain open");
+    assert!(matches!(
+        wizard.phase(),
+        crate::setup_wizard::SetupWizardPhase::Error(message)
+            if message == "Validation failed with 401"
+    ));
+}
+
+#[test]
 fn x11_primary_hint_requires_canonical_full_miss_outcome() {
     use crate::app::actions::{ClipboardPasteCompletion, ClipboardPasteTarget};
     assert_eq!(
@@ -2001,6 +2070,37 @@ fn logout_clears_pending_gate_verification() {
 
     assert!(app.pending_gate_verification.is_none());
     assert!(app.last_subscription_check_at.is_none());
+}
+
+/// Logout must drop session-derived billing visibility and tier restrictions
+/// so stale SuperGrok CTAs cannot linger on the welcome screen.
+#[test]
+fn logout_clears_authenticated_billing_state() {
+    let mut app = test_app_with_agent();
+    app.has_authenticated_session = true;
+    app.subscription_tier = Some("Free".into());
+    app.gate = Some(xai_grok_shell::auth::GateInfo {
+        message: "Subscribe".into(),
+        url: None,
+        label: None,
+    });
+    app.usage_visible = true;
+    app.apply_tier_restrictions();
+    assert!(!app.tier_restricted_commands.is_empty());
+    assert!(app.is_voice_tier_restricted());
+    app.team_id = Some("team-uuid".into());
+    app.team_name = Some("Acme Corp".into());
+
+    dispatch_task_result(TaskResult::LogoutComplete, &mut app);
+
+    assert!(!app.has_authenticated_session);
+    assert!(app.team_id.is_none());
+    assert!(app.team_name.is_none());
+    assert!(app.subscription_tier.is_none());
+    assert!(app.gate.is_none());
+    assert!(!app.usage_visible);
+    assert!(app.tier_restricted_commands.is_empty());
+    assert!(!app.is_voice_tier_restricted());
 }
 
 /// `apply_setting_rollback` on a known key reverts the in-memory

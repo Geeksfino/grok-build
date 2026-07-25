@@ -460,6 +460,7 @@ fn run_pending_suspends(
 pub(crate) async fn run(
     terminal: &mut PagerTerminal,
     connection: crate::acp::AcpConnection,
+    connect_flags: crate::acp::ConnectFlags,
     config_watcher: &mut ConfigWatcher,
     args: &PagerArgs,
     session_cwd: Option<std::path::PathBuf>,
@@ -487,6 +488,7 @@ pub(crate) async fn run(
         connection.models,
         connection.available_commands,
     );
+    app.connect_flags = connect_flags.clone();
     app.tracing_rx = Some(tracing_handle.rx);
     // Startup terminal height for the auto-compact derivation; kept fresh by
     // `Event::Resize` from here on. 0 (probe failure) never forces compact.
@@ -633,10 +635,27 @@ pub(crate) async fn run(
     app.auth_methods = connection.auth_methods.clone();
 
     // Seed auth state from ACP connection metadata.
+    // `grok provider` sets this env var so startup reuses the existing wizard path.
+    let force_provider_setup = std::env::var(crate::setup_wizard::FORCE_PROVIDER_SETUP_ENV)
+        .ok()
+        .is_some_and(|value| !matches!(value.trim(), "" | "0" | "false" | "FALSE" | "False"));
     // --force-login overrides: show the login screen even when credentials exist.
-    let force_login = args.force_login && !connection.auth_methods.is_empty();
-    let needs_interactive_login = connection.needs_login || force_login;
-    if needs_interactive_login {
+    let force_login = args.force_login && !force_provider_setup && !connection.auth_methods.is_empty();
+    let needs_provider_setup = force_provider_setup
+        || crate::setup_wizard::cold_start_needs_provider_setup(
+            &connection.auth_methods,
+            force_login,
+        );
+    let needs_interactive_login = !needs_provider_setup && (connection.needs_login || force_login);
+    if needs_provider_setup {
+        app.welcome_prompt_focused = false;
+        app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+        tracing::info!(
+            force_requested = force_provider_setup,
+            methods_empty = connection.auth_methods.is_empty(),
+            "auto-opening provider setup at startup"
+        );
+    } else if needs_interactive_login {
         app.welcome_prompt_focused = false;
 
         if connection.needs_login {
@@ -679,8 +698,6 @@ pub(crate) async fn run(
         // Skip the login splash screen — auto-trigger login immediately
         // by reusing dispatch_login. Effects are stashed and drained after
         // the initial render so the user sees the auth UI right away.
-        // Empty auth_methods (preferred_method pin with no credentials) is
-        // fail-closed: do not invent grok.com / auto-start OIDC.
         tracing::info!(
             method_id = ?app.login_method_id,
             methods_empty = connection.auth_methods.is_empty(),
@@ -690,15 +707,13 @@ pub(crate) async fn run(
     // else: auth_state defaults to Done (already authenticated eagerly)
     // Effects stashed until after the initial render, so the user sees the
     // welcome/auth UI right away.
-    let mut post_render_effects = if needs_interactive_login {
+    let mut post_render_effects = if needs_provider_setup {
+        dispatch::dispatch(Action::OpenSetupWizard, &mut app)
+    } else if needs_interactive_login {
         if connection.auth_methods.is_empty() {
-            // preferred_method pin unavailable — no advertised method to start.
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
-                ),
-            };
-            vec![]
+            // Defensive fallback: an inconsistent empty-methods login path should
+            // still route to provider setup rather than inventing login UX.
+            dispatch::dispatch(Action::OpenSetupWizard, &mut app)
         } else {
             dispatch::dispatch(Action::Login, &mut app)
         }
@@ -713,13 +728,11 @@ pub(crate) async fn run(
         }
     } else {
         // No cached session — check if the API key is the active credential.
+        app.clear_authenticated_session_state();
         app.is_api_key_auth = app.auth_methods.iter().any(|m| {
             m.id().0.as_ref() == xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID
         });
-        // No AuthMeta on this path — hide `/usage` for API keys.
-        if app.is_api_key_auth {
-            app.usage_visible = false;
-        }
+        app.recompute_usage_visibility();
     }
 
     // After auth so API-key + managed policy resolve correctly.
@@ -1177,7 +1190,7 @@ pub(crate) async fn run(
         }
     });
     let mut acp_rx = connection.rx;
-    let connection_cancel = connection.cancel;
+    let mut connection_cancel = connection.cancel;
     let mut leader_status_rx = connection.leader_status_rx;
     let mut tasks: JoinSet<TaskResult> = JoinSet::new();
     let (progress_tx, mut progress_rx) =
@@ -1190,7 +1203,7 @@ pub(crate) async fn run(
     // (cpal) and Linux (subprocess recorder), false for Bazel builds (no
     // capture in the test sandbox).
     let mut voice_rx = None::<tokio::sync::mpsc::Receiver<xai_grok_voice::VoiceEvent>>;
-    let voice_auth_factory = connection.auth_manager.clone();
+    let mut voice_auth_factory = connection.auth_manager.clone();
 
     // Animation tick: only scheduled when there are running entries.
     let mut tick_interval = tick_interval;
@@ -1760,7 +1773,51 @@ pub(crate) async fn run(
 
             Some(join_result) = tasks.join_next() => {
                 match join_result {
-                    Ok(result) => {
+                    Ok(mut result) => {
+                        if let TaskResult::SetupWizardSubmitComplete { result: Ok(completion) } = &mut result
+                            && let Some(connection) = completion.connection.take()
+                        {
+                            connection_cancel.cancel();
+                            acp_rx = connection.rx;
+                            connection_cancel = connection.cancel;
+                            leader_status_rx = connection.leader_status_rx;
+                            voice_auth_factory = connection.auth_manager.clone();
+
+                            app.leader_mode = leader_status_rx.is_some();
+                            crate::unified_log::set_sender(connection.tx.clone());
+                            app.acp_tx = connection.tx.clone();
+                            app.models = connection.models;
+                            app.bootstrap_acp_commands = connection.available_commands;
+                            app.auth_methods = connection.auth_methods.clone();
+                            app.login_label = connection.login_label;
+                            app.login_method_id = connection.login_method_id;
+                            app.auth_start_mode = match connection.auth_start_mode {
+                                crate::acp::AuthStartMode::Pending => {
+                                    crate::app::app_view::AuthMode::Pending
+                                }
+                                crate::acp::AuthStartMode::Command => {
+                                    crate::app::app_view::AuthMode::Command
+                                }
+                            };
+                            app.cancel_rewind_enabled = connection.cancel_rewind_enabled;
+                            apply_session_recap_available(&mut app, connection.session_recap_available);
+
+                            if let Some(meta) = connection.auth_meta {
+                                match serde_json::from_value::<xai_grok_shell::auth::AuthMeta>(meta) {
+                                    Ok(auth_meta) => app.apply_auth_meta(&auth_meta),
+                                    Err(e) => tracing::warn!(
+                                        "failed to deserialize reconnected auth_meta: {e}"
+                                    ),
+                                }
+                            } else {
+                                app.clear_authenticated_session_state();
+                                app.is_api_key_auth = app.auth_methods.iter().any(|m| {
+                                    m.id().0.as_ref()
+                                        == xai_grok_shell::agent::auth_method::XAI_API_KEY_METHOD_ID
+                                });
+                                app.recompute_usage_visibility();
+                            }
+                        }
                         let effs = dispatch::dispatch(Action::TaskComplete(result), &mut app);
                         if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
                             break;

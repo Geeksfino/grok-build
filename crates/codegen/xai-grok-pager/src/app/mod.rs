@@ -603,14 +603,15 @@ pub async fn run(
         default_auto_mode: launch_auto && !launch_yolo.yolo,
     };
     let connection = if use_leader {
-        let conn = crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await?;
+        let conn =
+            crate::acp::connect_via_leader(&cancel, connect_flags.clone(), &raw_config).await?;
         tracing::info!(
             elapsed_ms = startup_start.elapsed().as_millis() as u64,
             "Connected via leader"
         );
         conn
     } else {
-        let conn = crate::acp::connect(&cancel, connect_flags).await?;
+        let conn = crate::acp::connect(&cancel, connect_flags.clone()).await?;
         tracing::info!(
             elapsed_ms = startup_start.elapsed().as_millis() as u64,
             "Connected directly (non-leader)"
@@ -698,6 +699,7 @@ pub async fn run(
     let result = event_loop::run(
         &mut terminal,
         connection,
+        connect_flags,
         &mut config_watcher,
         &effective_args,
         session_cwd,

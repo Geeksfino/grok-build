@@ -507,14 +507,12 @@ fn auto_respond_to_permissions(
 /// "Not signed in" error message, tailored to the session type.
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
-        "Not signed in. Run `grok login` to authenticate \
-         (or `grok login --device-code` if no browser is available)."
+        "No model credentials found. Run `grok provider` to configure an LLM, \
+         or add a [model.*] entry in ~/.grok/config.toml."
             .to_string()
     } else {
-        "Not signed in. To authenticate without a browser, run:\n  \
-         grok login --device-code\n\n\
-         Alternatively, set the XAI_API_KEY environment variable \
-         or run `grok login` on a machine with a browser."
+        "No model credentials found. Run `grok provider` to configure an LLM, \
+         or add a [model.*] entry in ~/.grok/config.toml."
             .to_string()
     }
 }
@@ -1900,6 +1898,20 @@ mod tests {
             assert!(!ctx.allow_remote_restore);
             assert_eq!(ctx.has_worktree, has_worktree);
         }
+    }
+
+    #[test]
+    fn auth_required_message_points_headless_users_to_grok_provider() {
+        let interactive = auth_required_message(true);
+        assert!(
+            interactive.contains("grok provider"),
+            "interactive guidance should point at provider setup: {interactive}"
+        );
+        let noninteractive = auth_required_message(false);
+        assert!(
+            noninteractive.contains("grok provider"),
+            "headless guidance should point at provider setup: {noninteractive}"
+        );
     }
 
     #[test]

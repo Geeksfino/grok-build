@@ -33,17 +33,27 @@ static DEFAULTS: LazyLock<DefaultModels> = LazyLock::new(|| {
         .expect("default_models.json: invalid JSON or missing 'default' field");
 
     // Baked-in JSON — a mismatch here is a developer error, not a runtime condition.
-    let model_ids: Vec<&str> = defaults.models.iter().map(|m| m.model.as_str()).collect();
-    assert!(
-        model_ids.contains(&defaults.default.as_str()),
-        "default_models.json: 'default' is '{}' but 'models' array only has {model_ids:?}",
-        defaults.default,
-    );
+    if defaults.default.is_empty() {
+        assert!(
+            defaults.models.is_empty(),
+            "default_models.json: blank 'default' requires empty 'models' array"
+        );
+    } else {
+        let model_ids: Vec<&str> = defaults.models.iter().map(|m| m.model.as_str()).collect();
+        assert!(
+            model_ids.contains(&defaults.default.as_str()),
+            "default_models.json: 'default' is '{}' but 'models' array only has {model_ids:?}",
+            defaults.default,
+        );
+    }
 
     defaults
 });
 
 /// Primary model for coding tasks and general fallback.
+///
+/// An empty string means there is no baked-in default; config or setup flows
+/// must supply one.
 pub fn default_model() -> &'static str {
     &DEFAULTS.default
 }
@@ -67,4 +77,23 @@ pub fn default_session_summary_model() -> &'static str {
         .session_summary
         .as_deref()
         .unwrap_or(&DEFAULTS.default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_catalog_allows_blank_default() {
+        let parsed: DefaultModels =
+            serde_json::from_str(r#"{"default":"","models":[]}"#).expect("parse");
+        assert_eq!(parsed.default, "");
+        assert!(parsed.models.is_empty());
+    }
+
+    #[test]
+    fn embedded_default_model_is_blank() {
+        assert_eq!(default_model(), "");
+        assert!(DEFAULTS.models.is_empty());
+    }
 }

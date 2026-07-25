@@ -19,19 +19,33 @@ pub enum Command {
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
-    /// Sign in to Grok
+    /// Login compatibility shim (disabled; run `grok provider` instead)
+    #[command(long_about = "\
+Login is disabled in this build.
+
+Run `grok provider` to configure an LLM provider, or edit ~/.grok/config.toml manually.
+
+This subcommand remains available only as a backwards-compatible shim and exits
+with guidance instead of starting an auth flow.
+")]
     Login {
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
-        /// Use Grok OAuth via auth.x.ai.
-        #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
+        /// Deprecated compatibility flag; ignored because login is disabled in this build.
+        #[arg(
+            long = "oauth",
+            alias = "oidc",
+            conflicts_with_all = ["device_auth"],
+            hide = true
+        )]
         oauth: bool,
-        /// Use device-code authentication for headless/remote environments.
+        /// Deprecated compatibility flag; ignored because login is disabled in this build.
         #[arg(
             long = "device-auth",
             visible_alias = "device-code",
-            conflicts_with_all = ["oauth"]
+            conflicts_with_all = ["oauth"],
+            hide = true
         )]
         device_auth: bool,
         /// Authenticate for remote development environments (hidden).
@@ -42,6 +56,8 @@ pub enum Command {
         #[arg(skip)]
         devbox: bool,
     },
+    /// Configure an LLM provider interactively
+    Provider,
     /// Manage MCP server configurations
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
@@ -904,6 +920,17 @@ impl PagerArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn login_subcommand() -> clap::Command {
+        use clap::CommandFactory;
+
+        PagerArgs::command()
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "login")
+            .cloned()
+            .expect("login subcommand present")
+    }
+
     #[test]
     fn version_flag_exits_zero() {
         let err = PagerArgs::try_parse_from(["grok", "--version"]).unwrap_err();
@@ -1230,5 +1257,64 @@ mod tests {
             panic!("expected agent subcommand");
         };
         assert_eq!(agent.reasoning_effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn provider_subcommand_parses() {
+        let args = PagerArgs::try_parse_from(["grok", "provider"]).expect("provider parses");
+        assert!(matches!(args.command, Some(Command::Provider)));
+    }
+
+    #[test]
+    fn login_shim_message_login_help_points_at_provider_setup() {
+        let help = login_subcommand().render_long_help().to_string();
+
+        assert!(
+            help.contains("disabled"),
+            "login help should explain that the command is disabled: {help}"
+        );
+        assert!(
+            help.contains("grok provider"),
+            "login help should point at provider setup: {help}"
+        );
+        assert!(
+            help.contains("config.toml"),
+            "login help should mention config.toml as the manual path: {help}"
+        );
+        assert!(
+            !help.contains("--oauth"),
+            "deprecated oauth flag should be hidden from help: {help}"
+        );
+        assert!(
+            !help.contains("--device-auth"),
+            "deprecated device-auth flag should be hidden from help: {help}"
+        );
+    }
+
+    #[test]
+    fn login_shim_message_login_compat_flags_still_parse() {
+        let oauth = PagerArgs::try_parse_from(["grok", "login", "--oauth"])
+            .expect("hidden --oauth compatibility flag should still parse");
+        assert!(matches!(
+            oauth.command,
+            Some(Command::Login {
+                legacy: false,
+                oauth: true,
+                device_auth: false,
+                devbox: false,
+            })
+        ));
+
+        let device = PagerArgs::try_parse_from(["grok", "login", "--device-auth"])
+            .expect("hidden --device-auth compatibility flag should still parse");
+        assert!(matches!(
+            device.command,
+            Some(Command::Login {
+                legacy: false,
+                oauth: false,
+                device_auth: true,
+                devbox: false,
+            })
+        ));
     }
 }

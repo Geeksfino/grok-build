@@ -438,6 +438,27 @@ fn login_with_empty_auth_methods_fails_closed() {
     assert!(app.login_method_id.is_none());
 }
 
+#[test]
+fn open_setup_wizard_sets_cold_start_state() {
+    let mut app = test_app();
+    app.welcome_prompt_focused = true;
+    assert!(app.setup_wizard.is_none());
+    assert!(app.welcome_prompt_focused);
+
+    let effects = dispatch(Action::OpenSetupWizard, &mut app);
+
+    assert!(effects.is_empty(), "opening setup wizard is pure state");
+    assert!(app.setup_wizard.is_some(), "wizard state should be initialized");
+    assert!(
+        !app.session_startup_allowed(),
+        "open setup wizard must keep deferred startup blocked"
+    );
+    assert!(
+        !app.welcome_prompt_focused,
+        "cold-start setup should move focus away from the prompt"
+    );
+}
+
 /// Cancelling a mid-session login returns to the session rather than
 /// quitting the app, and clears the stashed view + auth state.
 #[test]

@@ -89,6 +89,17 @@ fn config_login_device_flow(effective: Option<&toml::Value>) -> Option<bool> {
     effective.and_then(|cfg| cfg.get("auth")?.get("login_device_flow")?.as_bool())
 }
 
+fn login_device_flow_probe_url<'a>(
+    env: Option<bool>,
+    config: Option<bool>,
+    proxy_url: &'a str,
+) -> Option<&'a str> {
+    if env.is_some() || config.is_some() || proxy_url.is_empty() {
+        return None;
+    }
+    Some(proxy_url)
+}
+
 /// Device-flow precedence: CLI > env > config > remote feature flag > loopback.
 /// Returns the deciding tier so the caller can log which one chose the transport.
 fn resolve_device_flow(
@@ -133,18 +144,20 @@ async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool 
         // One config snapshot feeds both the `[auth]` tier and the proxy URL.
         let effective = crate::config::load_effective_config().ok();
         let config = config_login_device_flow(effective.as_ref());
-        // Only hit remote settings when env/config haven't already pinned the transport.
-        let remote = if env.is_none() && config.is_none() {
-            let proxy_url = effective
-                .as_ref()
-                .map(crate::agent::config::EndpointsConfig::from_config_value)
-                .unwrap_or_default()
-                .proxy_url();
+        let proxy_url = effective
+            .as_ref()
+            .map(crate::agent::config::EndpointsConfig::from_config_value)
+            .unwrap_or_default()
+            .proxy_url();
+        // Only hit remote settings when env/config haven't already pinned the
+        // transport and there is a real proxy endpoint to probe.
+        let remote = if let Some(proxy_url) = login_device_flow_probe_url(env, config, &proxy_url)
+        {
             // Bound the whole fetch — including the one-time agent_id lookup — so a
             // slow/hung agent_id or proxy can never stall login; time out to loopback.
             tokio::time::timeout(
                 std::time::Duration::from_secs(2),
-                crate::remote::fetch_login_device_flow(&proxy_url),
+                crate::remote::fetch_login_device_flow(proxy_url),
             )
             .await
             .ok()
@@ -1505,6 +1518,25 @@ mod tests {
                 "remote settings unavailable falls back to the loopback default"
             );
         });
+    }
+
+    #[test]
+    fn login_device_flow_probe_url_skips_empty_proxy() {
+        assert_eq!(login_device_flow_probe_url(None, None, ""), None);
+        assert_eq!(
+            login_device_flow_probe_url(None, None, "https://proxy.example/v1"),
+            Some("https://proxy.example/v1")
+        );
+        assert_eq!(
+            login_device_flow_probe_url(Some(true), None, "https://proxy.example/v1"),
+            None,
+            "env override must bypass the remote probe"
+        );
+        assert_eq!(
+            login_device_flow_probe_url(None, Some(false), "https://proxy.example/v1"),
+            None,
+            "config override must bypass the remote probe"
+        );
     }
 
     #[test]

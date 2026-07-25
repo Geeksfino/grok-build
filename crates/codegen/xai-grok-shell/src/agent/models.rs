@@ -1388,6 +1388,7 @@ fn build_prefetched_map(
             info,
             api_key: None,
             env_key: None,
+            auth_not_required: m.auth_not_required,
             api_base_url: m.api_base_url.clone().or(api_base_url_override.clone()),
         };
         map.insert(key, entry);
@@ -1426,9 +1427,13 @@ pub(crate) fn prefetch_models_and_settings_blocking(
     // Settings need a grok.com session; skip for BYOK.
     let settings = match auth {
         Some(auth) if remote_fetch_enabled => {
+            let Some(proxy_url) = startup_settings_url(endpoints) else {
+                tracing::info!("settings fetch skipped: no cli-chat-proxy configured");
+                return (models, None);
+            };
             let _timer = crate::instrumentation_timer!("startup.early_settings_fetch");
             crate::remote::fetch_settings_blocking(
-                &endpoints.proxy_url(),
+                &proxy_url,
                 auth,
                 endpoints.alpha_test_key.as_deref(),
             )
@@ -1436,6 +1441,19 @@ pub(crate) fn prefetch_models_and_settings_blocking(
         _ => None,
     };
     (models, settings)
+}
+
+fn startup_models_list_url(
+    endpoints: &config::EndpointsConfig,
+    _fetch_auth: ModelFetchAuth,
+) -> Option<String> {
+    let url = endpoints.resolve_models_list_url();
+    (!url.is_empty()).then_some(url)
+}
+
+fn startup_settings_url(endpoints: &config::EndpointsConfig) -> Option<String> {
+    let url = endpoints.proxy_url();
+    (!url.is_empty()).then_some(url)
 }
 
 /// `remote_fetch_enabled` is a parameter so the pair helper above resolves the
@@ -1447,8 +1465,14 @@ fn prefetch_models_blocking_gated(
     remote_fetch_enabled: bool,
 ) -> Option<IndexMap<String, ModelEntry>> {
     let cache_auth = fetch_auth.cache_auth_method();
+    // Startup prefetch only talks to explicit models endpoints or the proxy;
+    // if neither is configured, stay idle rather than falling through to the
+    // API base URL.
+    let Some(cache_origin) = startup_models_list_url(endpoints, fetch_auth) else {
+        tracing::info!("models fetch skipped: no proxy/models endpoint configured");
+        return None;
+    };
     // Same URL the fetch below will hit — the cache is only valid for it.
-    let cache_origin = crate::remote::models_list_url(endpoints, fetch_auth);
     let cache = ModelsCacheManager::new();
     if let Some(cached) = cache.load_fresh(&cache_auth, &cache_origin) {
         return Some(cached.models);
@@ -2015,6 +2039,7 @@ mod tests {
             info: config::ModelInfo::fallback("fp-model"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         flagged.info.show_model_fingerprint = true;
@@ -2027,6 +2052,7 @@ mod tests {
                 info: config::ModelInfo::fallback("plain-model"),
                 api_key: None,
                 env_key: None,
+                auth_not_required: false,
                 api_base_url: None,
             },
         );
@@ -2037,6 +2063,7 @@ mod tests {
             info: config::ModelInfo::fallback("enterprise-slug"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         custom.info.show_model_fingerprint = true;
@@ -2207,6 +2234,7 @@ mod tests {
                 info: config::ModelInfo::fallback("test-model"),
                 api_key: None,
                 env_key: None,
+                auth_not_required: false,
                 api_base_url: None,
             },
         );
@@ -2261,6 +2289,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -2283,6 +2312,7 @@ mod tests {
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -2310,6 +2340,7 @@ mod tests {
             info: config::ModelInfo::fallback("grok-4.5"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         no_none.info.supports_reasoning_effort = true;
@@ -2328,6 +2359,7 @@ mod tests {
             info: config::ModelInfo::fallback("legacy-none"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         with_none.info.supports_reasoning_effort = true;
@@ -2434,6 +2466,7 @@ mod tests {
             info: config::ModelInfo::fallback("reasoning-model"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         reasoning_entry.info.supports_reasoning_effort = true;
@@ -2443,6 +2476,7 @@ mod tests {
             info: config::ModelInfo::fallback("plain-model"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         prefetched.insert("plain-model".to_string(), plain_entry);
@@ -2485,6 +2519,7 @@ mod tests {
             info: config::ModelInfo::fallback(model_id),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         }
     }
@@ -2955,6 +2990,41 @@ mod tests {
 
         assert!(!mgr.models().contains_key("grok-legacy"));
     }
+    #[test]
+    fn load_fresh_accepts_legacy_cache_without_auth_not_required() {
+        let mgr = test_manager();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache_manager(tmp.path());
+        let auth_method = mgr.inner.fetch_auth.read().cache_auth_method();
+        let legacy = ModelsCache {
+            fetched_at: Utc::now(),
+            grok_version: Some(xai_grok_version::VERSION.to_string()),
+            auth_method: Some(auth_method.clone()),
+            origin: Some(mgr.cache_origin()),
+            etag: Some("etag-legacy-auth".into()),
+            models: make_prefetched(&["grok-legacy-auth"]),
+        };
+        let mut raw = serde_json::to_value(&legacy).expect("cache serializes");
+        raw["models"]["grok-legacy-auth"]
+            .as_object_mut()
+            .expect("model entry is an object")
+            .remove("auth_not_required");
+        std::fs::write(
+            &cache.path,
+            serde_json::to_vec_pretty(&raw).expect("cache JSON serializes"),
+        )
+        .expect("legacy cache JSON writes");
+
+        let loaded = cache
+            .load_fresh(&auth_method, &mgr.cache_origin())
+            .expect("legacy cache should still load");
+
+        assert!(loaded.models.contains_key("grok-legacy-auth"));
+        assert!(
+            !loaded.models["grok-legacy-auth"].auth_not_required,
+            "missing auth_not_required should deserialize to false for legacy caches"
+        );
+    }
 
     // ── clear() resets has_fetched_real_catalog ──────────────────────
 
@@ -3255,6 +3325,45 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial]
+    fn startup_prefetch_urls_skip_empty_proxy_but_keep_explicit_models_endpoints() {
+        let _proxy = EnvGuard::unset("GROK_CLI_CHAT_PROXY_BASE_URL");
+        let _models_base = EnvGuard::unset("GROK_MODELS_BASE_URL");
+        let _models_list = EnvGuard::unset("GROK_MODELS_LIST_URL");
+
+        let default_endpoints = config::EndpointsConfig::default();
+        assert_eq!(
+            startup_models_list_url(&default_endpoints, ModelFetchAuth::Session),
+            None
+        );
+        assert_eq!(
+            startup_models_list_url(&default_endpoints, ModelFetchAuth::ApiKey),
+            None,
+            "an ambient API key alone must not re-arm startup model prefetch"
+        );
+        assert_eq!(startup_settings_url(&default_endpoints), None);
+
+        let custom_base = config::EndpointsConfig {
+            models_base_url: Some("https://models.example.test/v1".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
+        assert_eq!(
+            startup_models_list_url(&custom_base, ModelFetchAuth::Session),
+            Some("https://models.example.test/v1/models".to_owned())
+        );
+        assert_eq!(startup_settings_url(&custom_base), None);
+
+        let explicit_list = config::EndpointsConfig {
+            models_list_url: Some("https://catalog.example.test/v1/models".to_owned()),
+            ..config::EndpointsConfig::default()
+        };
+        assert_eq!(
+            startup_models_list_url(&explicit_list, ModelFetchAuth::Session),
+            Some("https://catalog.example.test/v1/models".to_owned())
+        );
+    }
+
     /// remote_fetch=false: an online catalog refresh is a no-op — nothing is
     /// fetched, no real-catalog flag is set, and the static catalog keeps
     /// resolving. Covers `list_models`/`do_refresh` online strategies too,
@@ -3268,6 +3377,7 @@ mod tests {
                 info: config::ModelInfo::fallback("static-one"),
                 api_key: None,
                 env_key: None,
+                auth_not_required: false,
                 api_base_url: None,
             },
         );
@@ -3295,6 +3405,7 @@ mod tests {
             info: config::ModelInfo::fallback("oauth-only"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         oauth_only.info.supported_in_api = false;
@@ -3304,6 +3415,7 @@ mod tests {
             info: config::ModelInfo::fallback("public-model"),
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_base_url: None,
         };
         catalog.insert("public-model".to_string(), public);
@@ -3366,6 +3478,7 @@ mod tests {
             top_p: None,
             api_key: None,
             env_key: None,
+            auth_not_required: false,
             api_backend: Default::default(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),
             auto_compact_threshold_percent: None,

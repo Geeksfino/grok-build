@@ -120,17 +120,13 @@ pub struct BuiltAuthMethods {
 /// A prior change deferred it to the END for per-model credentials, which made
 /// the pager send per-model-key users to the login screen. Unit tests lock this.
 ///
-/// Unpinned ordering (when each method is enabled):
-/// 1. `xai.api_key`     (if `has_external_api_key`)
-/// 2. `cached_token`    (if `has_cached_token`)
-/// 3. exactly one of:
-///    - `oidc`          (if `has_enterprise_oidc`)
-///    - `grok.com`      (otherwise)
+/// Unpinned ordering:
+/// 1. `xai.api_key` (if `has_external_api_key`)
+/// 2. nothing else
 ///
 /// Unpinned `default_auth_method_id`:
-/// - `cached_token` if `has_cached_token`
-/// - `xai.api_key`  else if `has_external_api_key`
-/// - `None`         otherwise
+/// - `xai.api_key` if `has_external_api_key`
+/// - `None`        otherwise
 ///
 /// Pinned (`preferred_method`):
 /// - `ApiKey`: only `xai.api_key` if available; else empty list + `None` (fail).
@@ -216,49 +212,25 @@ fn build_pinned_oidc(
 
 fn build_unpinned(
     has_external_api_key: bool,
-    has_cached_token: bool,
-    has_enterprise_oidc: bool,
-    enterprise_oidc_issuer: Option<&str>,
-    login_label: Option<&str>,
-    has_auth_provider_command: bool,
+    _has_cached_token: bool,
+    _has_enterprise_oidc: bool,
+    _enterprise_oidc_issuer: Option<&str>,
+    _login_label: Option<&str>,
+    _has_auth_provider_command: bool,
 ) -> BuiltAuthMethods {
-    let mut methods: Vec<acp::AuthMethod> = Vec::new();
-    let mut default_auth_method_id: Option<acp::AuthMethodId> = None;
-
+    // Provider-neutral default: do not advertise interactive login, OIDC, or
+    // legacy cached-token methods from the unpinned path. Explicit
+    // preferred_method pins still use the dedicated builders.
     if has_external_api_key {
-        methods.push(xai_api_key_auth_method());
-        default_auth_method_id = Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID));
+        return BuiltAuthMethods {
+            methods: vec![xai_api_key_auth_method()],
+            default_auth_method_id: Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID)),
+        };
     }
-
-    if has_cached_token {
-        methods.push(cached_token_auth_method());
-        // cached_token wins over xai.api_key for default_auth_method_id so
-        // is_session_based_auth() returns true and OIDC refresh stays alive.
-        let overrode_api_key = default_auth_method_id.is_some();
-        default_auth_method_id = Some(acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID));
-        if overrode_api_key {
-            xai_grok_telemetry::unified_log::info(
-                "auth method priority: cached_token overrides xai.api_key for default_auth_method_id",
-                None,
-                Some(serde_json::json!({
-                    "has_external_api_key": has_external_api_key,
-                    "has_cached_token": has_cached_token,
-                })),
-            );
-        }
-    }
-
-    push_interactive_login(
-        &mut methods,
-        has_enterprise_oidc,
-        enterprise_oidc_issuer,
-        login_label,
-        has_auth_provider_command,
-    );
 
     BuiltAuthMethods {
-        methods,
-        default_auth_method_id,
+        methods: Vec::new(),
+        default_auth_method_id: None,
     }
 }
 
@@ -621,11 +593,10 @@ mod tests {
         );
     }
 
-    /// BYOK + cached session token: xai.api_key stays first in the methods
-    /// list (skips login screen), but `default_auth_method_id` is
-    /// `cached_token` (keeps OIDC refresh alive).
+    /// Unpinned BYOK ignores any cached session token and advertises only
+    /// `xai.api_key`.
     #[test]
-    fn byok_with_cached_token_keeps_xai_api_key_first() {
+    fn byok_with_cached_token_only_advertises_xai_api_key() {
         let inputs = AuthMethodsBuildInputs {
             has_external_api_key: true,
             has_cached_token: true,
@@ -636,31 +607,26 @@ mod tests {
         assert_eq!(
             first_kind(&built.methods),
             Some(AuthMethodKind::XaiApiKey),
-            "xai.api_key MUST precede cached_token in advertised order",
+            "xai.api_key must remain the only advertised unpinned method",
         );
-        // Sanity: cached_token still appears, just second.
         assert!(
-            built
-                .methods
-                .iter()
-                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::CachedToken),
-            "cached_token must still be advertised when present",
+            built.methods.len() == 1,
+            "expected only xai.api_key, got {:?}",
+            method_ids(&built),
         );
-        // cached_token wins for default_auth_method_id (keeps OIDC refresh alive).
         assert_eq!(
             built
                 .default_auth_method_id
                 .as_ref()
                 .map(|id| id.0.as_ref()),
-            Some(CACHED_TOKEN_AUTH_METHOD_ID),
+            Some(XAI_API_KEY_METHOD_ID),
         );
     }
 
-    /// Session-only user (no API key anywhere): cached_token first, then
-    /// `grok.com` — `auth_methods.first()` does NOT need interactive login,
-    /// so this user also skips the login screen at startup.
+    /// Unpinned session-only users no longer advertise `cached_token` or any
+    /// interactive login method by default.
     #[test]
-    fn session_only_user_first_method_is_cached_token() {
+    fn session_only_user_advertises_no_auth_methods() {
         let inputs = AuthMethodsBuildInputs {
             has_external_api_key: false,
             has_cached_token: true,
@@ -668,36 +634,38 @@ mod tests {
         };
         let built = build_auth_methods(inputs);
 
-        assert_eq!(
-            first_kind(&built.methods),
-            Some(AuthMethodKind::CachedToken)
+        assert!(
+            built.methods.is_empty(),
+            "expected no auth methods, got {:?}",
+            method_ids(&built),
         );
-        assert_eq!(
-            built
-                .default_auth_method_id
-                .as_ref()
-                .map(|id| id.0.as_ref()),
-            Some(CACHED_TOKEN_AUTH_METHOD_ID),
-        );
+        assert!(built.default_auth_method_id.is_none());
     }
 
-    /// Brand-new user (no API key, no cached token): only `grok.com` is
-    /// advertised, and the pager will (correctly) show the login screen.
-    /// `default_auth_method_id` is None so the pager falls back to the
-    /// advertised login method.
+    /// Brand-new users no longer advertise any interactive login method by
+    /// default.
     #[test]
-    fn fresh_user_only_advertises_grok_com_and_requires_login() {
+    fn fresh_user_advertises_no_interactive_login() {
         let built = build_auth_methods(default_inputs());
 
-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
         assert!(built.default_auth_method_id.is_none());
-        assert_eq!(built.methods.len(), 1);
+        assert!(
+            built.methods.is_empty(),
+            "expected no auth methods, got {:?}",
+            method_ids(&built),
+        );
+        assert!(
+            !built
+                .methods
+                .iter()
+                .any(|m| AuthMethodKind::from_id(m.id()).needs_interactive_login())
+        );
     }
 
-    /// Enterprise OIDC replaces `grok.com` (mutually exclusive). xai.api_key,
-    /// when present, still leads.
+    /// Unpinned enterprise OIDC configuration no longer advertises interactive
+    /// login; BYOK still exposes only `xai.api_key`.
     #[test]
-    fn enterprise_oidc_replaces_grok_com_but_xai_api_key_still_first() {
+    fn unpinned_enterprise_oidc_still_only_advertises_xai_api_key_when_available() {
         let inputs = AuthMethodsBuildInputs {
             has_external_api_key: true,
             has_cached_token: false,
@@ -709,29 +677,29 @@ mod tests {
 
         assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::XaiApiKey));
         assert!(
-            built
+            !built
                 .methods
                 .iter()
                 .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::Oidc),
-            "oidc must be advertised when has_enterprise_oidc",
+            "unpinned auth should ignore enterprise oidc login advertisement",
         );
         assert!(
             !built
                 .methods
                 .iter()
                 .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::GrokCom),
-            "grok.com and oidc are mutually exclusive",
+            "unpinned auth should not advertise grok.com",
         );
     }
 
-    /// `has_auth_provider_command` is plumbed through to the `grok.com` method
-    /// as `meta.external_provider = true`. Pinning this here so the pager's
-    /// `AuthStartMode::Command` path keeps working.
+    /// Explicit OIDC pinning still plumbs `has_auth_provider_command` through to
+    /// the `grok.com` method as `meta.external_provider = true`.
     #[test]
-    fn auth_provider_command_sets_external_provider_meta() {
+    fn pinned_oidc_auth_provider_command_sets_external_provider_meta() {
         let inputs = AuthMethodsBuildInputs {
             has_auth_provider_command: true,
             login_label: Some("Acme Corp"),
+            preferred_method: Some(PreferredAuthMethod::Oidc),
             ..default_inputs()
         };
         let built = build_auth_methods(inputs);
@@ -746,6 +714,26 @@ mod tests {
         assert_eq!(
             meta.get("external_provider").and_then(|v| v.as_bool()),
             Some(true),
+        );
+    }
+
+    #[test]
+    fn unpinned_ignores_cached_token_flag() {
+        let built = build_auth_methods(AuthMethodsBuildInputs {
+            has_cached_token: true,
+            ..default_inputs()
+        });
+        assert!(
+            !built
+                .methods
+                .iter()
+                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::CachedToken)
+        );
+        assert!(
+            !built
+                .methods
+                .iter()
+                .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::GrokCom)
         );
     }
 
@@ -791,8 +779,8 @@ mod tests {
         );
 
         // Without the env var present, has_own_credentials() returns false,
-        // the predicate returns false, and the builder advertises only the
-        // login method. Confirms the predicate isn't trivially true.
+        // the predicate returns false, and the builder advertises no methods.
+        // Confirms the predicate isn't trivially true.
         {
             let _unset = EnvGuard::unset(TEST_ENV_VAR);
             let has_external_api_key = should_advertise_xai_api_key(false, models.values());
@@ -801,11 +789,11 @@ mod tests {
                 has_external_api_key,
                 ..default_inputs()
             });
-            assert_ne!(
-                first_kind(&built.methods),
-                Some(AuthMethodKind::XaiApiKey),
-                "without env_key resolved, xai.api_key must NOT be advertised first",
+            assert!(
+                built.methods.is_empty(),
+                "without env_key resolved, unpinned auth should advertise no methods",
             );
+            assert!(built.default_auth_method_id.is_none());
         }
 
         // With the env var present (the actual enterprise scenario), the predicate
@@ -859,7 +847,7 @@ mod tests {
     /// Admin kill switch (`disable_api_key_auth`): the predicate must return
     /// false even when credentials are available everywhere (global env var
     /// AND per-model env_key), so the builder never advertises `xai.api_key`
-    /// and the pager sends the user to the deployment's login method instead.
+    /// and the unpinned method list stays empty.
     #[test]
     #[serial]
     fn disable_api_key_auth_suppresses_xai_api_key_method() {
@@ -884,12 +872,7 @@ mod tests {
                 .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::XaiApiKey),
             "xai.api_key must not be advertised when disable_api_key_auth is set",
         );
-        assert_eq!(
-            first_kind(&built.methods),
-            Some(AuthMethodKind::GrokCom),
-            "with api-key auth disabled and no cached token, the login method \
-             must lead so the pager requires interactive login",
-        );
+        assert!(built.methods.is_empty());
         assert!(built.default_auth_method_id.is_none());
     }
 
@@ -926,9 +909,8 @@ mod tests {
     // When this token is present via the `GROK_AUTH` env var (or via legacy
     // scope fallback in auth.json), `AuthManager::new` returns it from
     // `current()`, feeding `has_cached_token = true` into `build_auth_methods`.
-    // This puts `cached_token` first so `startup_auth_metadata()` returns
-    // `needs_login = false` -- legacy users get frictionless auth, no login
-    // screen.
+    // Unpinned provider-neutral defaults now ignore that cached token instead
+    // of advertising it.
     //
     // This test pins the env-var path (highest priority in AuthManager) end-
     // to-end. A regression in GROK_AUTH JSON parsing or in auth method
@@ -936,13 +918,11 @@ mod tests {
 
     /// END-TO-END REGRESSION TEST: a legacy auth token (WebLogin, no
     /// expires_at) present in the `GROK_AUTH` env var, with no other auth
-    /// available, MUST be loaded by `AuthManager` and cause `build_auth_methods`
-    /// to advertise `cached_token` first. The pager therefore skips the login
-    /// screen (frictionless legacy auth). This behavior works; the test
-    /// prevents regressions.
+    /// available, MUST be loaded by `AuthManager`; however, unpinned auth
+    /// method advertisement must still stay empty by default.
     #[test]
     #[serial]
-    fn grok_login_legacy_token_does_not_require_login() {
+    fn grok_login_legacy_token_does_not_get_advertised_by_default() {
         use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig};
 
         // Ensure clean slate for "no other auth available".
@@ -991,38 +971,25 @@ mod tests {
         let has_cached_token = mgr.current().is_some();
         assert!(has_cached_token);
 
-        // With only this legacy token (no xai api key), first method must be
-        // cached_token so pager skips login screen.
+        // With only this legacy token (no xai api key), unpinned auth
+        // advertisement must still stay empty.
         let built = build_auth_methods(AuthMethodsBuildInputs {
             has_external_api_key: false,
             has_cached_token,
             ..default_inputs()
         });
 
-        assert_eq!(
-            first_kind(&built.methods),
-            Some(AuthMethodKind::CachedToken),
-            "legacy token in env: cached_token MUST be auth_methods.first() \
-             (pager startup_auth_metadata returns needs_login=false)",
-        );
         assert!(
-            !AuthMethodKind::from_id(built.methods[0].id()).needs_interactive_login(),
-            "auth_methods.first() MUST NOT need interactive login when legacy token \
-             is in env -- prevents login screen regression",
+            built.methods.is_empty(),
+            "legacy token must not be advertised in unpinned auth methods",
         );
-        assert_eq!(
-            built
-                .default_auth_method_id
-                .as_ref()
-                .map(|id| id.0.as_ref()),
-            Some(CACHED_TOKEN_AUTH_METHOD_ID),
-        );
+        assert!(built.default_auth_method_id.is_none());
     }
 
     /// Negative case for the legacy flow: when auth.json does NOT contain a
     /// legacy-scope entry, AuthManager::current() is None,
-    /// has_cached_token is false, and build_auth_methods advertises only
-    /// the login method. This pins the predicate's "no" answer so the test
+    /// has_cached_token is false, and build_auth_methods advertises no
+    /// methods. This pins the predicate's "no" answer so the test
     /// above isn't trivially passing.
     #[test]
     #[serial]
@@ -1043,11 +1010,11 @@ mod tests {
             has_cached_token: mgr.current().is_some(),
             ..default_inputs()
         });
-        assert_eq!(
-            first_kind(&built.methods),
-            Some(AuthMethodKind::GrokCom),
-            "no cached token AND no api key: pager must show login (grok.com first)",
+        assert!(
+            built.methods.is_empty(),
+            "no cached token and no api key should advertise no methods",
         );
+        assert!(built.default_auth_method_id.is_none());
     }
 
     // ── preferred_method pin (fail-closed) ──────────────────────────────

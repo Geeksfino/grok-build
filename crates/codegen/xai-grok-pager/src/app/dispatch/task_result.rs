@@ -30,8 +30,8 @@ use super::session::fork::{
     handle_fork_session_failed, handle_fork_session_ready, handle_worktree_forked,
 };
 use super::session::lifecycle::{
-    dispatch_exit_session, handle_session_created, handle_switch_model_complete,
-    handle_worktree_session_created, handle_worktree_session_failed,
+    dispatch_exit_session, drain_startup_actions, handle_session_created,
+    handle_switch_model_complete, handle_worktree_session_created, handle_worktree_session_failed,
 };
 use super::session::load::{
     handle_card_detail_loaded, handle_deep_search_results, handle_session_load_failed,
@@ -221,6 +221,27 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::WorktreeSessionFailed { agent_id, error } => {
             handle_worktree_session_failed(app, agent_id, error)
         }
+        TaskResult::SetupWizardSubmitComplete { result } => match result {
+            Ok(completion) => {
+                crate::setup_wizard::apply_setup_wizard_success(
+                    app,
+                    completion.post_setup_notice,
+                );
+                if app.session_startup_allowed() {
+                    drain_startup_actions(app)
+                } else {
+                    vec![]
+                }
+            }
+            Err(error) => {
+                if let Some(wizard) = app.setup_wizard.as_mut() {
+                    wizard.finish_with_error(error);
+                } else {
+                    app.show_toast("Provider setup failed");
+                }
+                vec![]
+            }
+        },
         TaskResult::ForkSessionReady {
             agent_id,
             new_session_id,
@@ -945,11 +966,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::LogoutComplete => {
             app.auth_state = AuthState::Pending { error: None };
-            app.access_gate_shown_logged = false;
-            app.announcement_cta_impressions_logged.clear();
-            app.gate = None;
-            app.pending_gate_verification = None;
-            app.last_subscription_check_at = None;
+            app.clear_authenticated_session_state();
             app.login_method_id = None;
             ensure_login_method(app);
             app.auth_clipboard_copied = false;

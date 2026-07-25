@@ -50,7 +50,7 @@ pub(super) fn ensure_login_method(app: &mut AppView) {
 /// pin-unavailable copy when the list is empty.
 fn no_login_method_error(app: &AppView) -> String {
     if app.auth_methods.is_empty() {
-        xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string()
+        crate::setup_wizard::login_shim_message().to_string()
     } else {
         "No login method available".to_string()
     }
@@ -200,6 +200,7 @@ pub(super) fn dispatch_login(app: &mut AppView) -> Vec<Effect> {
     let request_seq = app.next_auth_request_seq;
     app.next_auth_request_seq += 1;
     app.auth_code_input.clear();
+    app.setup_wizard = None;
     app.auth_state = AuthState::Authenticating {
         request_seq,
         handle: None,

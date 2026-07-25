@@ -1,48 +1,45 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
+Grok resolves credentials from provider configuration, API keys, and advanced auth integrations such as enterprise SSO or external auth providers. Fresh installs do not start with browser login in this build.
 
 ---
 
-## Browser Login (Default)
+## First Run (Default)
 
-On first launch, Grok opens your browser to authenticate with grok.com:
+Fresh installs are provider-neutral. Configure a provider with the wizard:
 
 ```bash
-grok
+grok provider
 ```
 
-Grok stores credentials in `~/.grok/auth.json` and reuses them across sessions. Grok refreshes access tokens automatically in the background. When a token can't be refreshed, Grok prompts you to sign in again. Credentials without a server-provided expiry fall back to a 30-day lifetime.
+The wizard writes your selection to `~/.grok/config.toml` under `[models]` and `[model.*]`. You can also edit that file directly if you already know the endpoint, model, and credential settings you want to use.
+
+`grok login` is disabled in this build; it does not start a browser or device-code flow. To change providers later, run `grok provider` again or update `~/.grok/config.toml`.
+
+`grok setup` remains the managed team-configuration command. It does not replace provider selection.
 
 ### Re-authenticate
 
-To switch accounts or resolve an authentication problem, run:
+To switch providers or fix local credential configuration, run:
 
 ```bash
-grok login
+grok provider
 ```
 
-Running `grok login` starts the sign-in flow again, replacing your cached session. By default, it opens your browser and signs in through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
-
-| Flag | Description |
-|------|-------------|
-| `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
-| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
-
-To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
+If you need to clear cached first-party session state for advanced setups, remove `~/.grok/auth.json` or run `grok logout`.
 
 ---
 
 ## API Key
 
-For CI/CD, automation, or environments without browser access, use an API key from [console.x.ai](https://console.x.ai):
+For CI/CD, automation, or any provider flow that uses xAI keys directly, set an API key from [console.x.ai](https://console.x.ai):
 
 ```bash
 export XAI_API_KEY="xai-..."
 grok
 ```
 
-Grok uses the API key as a fallback when no session token is active. If you have already signed in interactively, the stored session token takes precedence. To fall back to the API key, run `grok logout` or delete `~/.grok/auth.json`.
+You can also reference the key from `~/.grok/config.toml` via `env_key = "XAI_API_KEY"` on a model entry. Session tokens, when present for advanced setups, still follow the precedence rules later in this guide.
 
 ---
 
@@ -82,7 +79,7 @@ export GROK_CLI_CHAT_PROXY_BASE_URL="https://grok-proxy.acme.com/v1"
 
 ### 3. Run `grok`
 
-The CLI discovers endpoints via `{issuer}/.well-known/openid-configuration`, opens the IdP login page, and stores tokens in `~/.grok/auth.json`. Tokens auto-refresh silently via the stored `refresh_token`.
+After the provider and OIDC settings are configured, the CLI discovers endpoints via `{issuer}/.well-known/openid-configuration` and stores tokens in `~/.grok/auth.json`. Tokens auto-refresh silently via the stored `refresh_token`.
 
 ### Optional fields
 
@@ -113,7 +110,7 @@ When browser-based login isn't possible -- for example, on sandboxed VMs, CI run
 2. Your binary runs whatever auth flow it needs (SSO, device code, certificate exchange)
 3. **stderr** carries human-readable output, such as login URLs and status messages. Grok reads stderr and surfaces it to the user; in the TUI, it turns the first `https://` URL into a clickable sign-in link.
 4. **stdout** is captured by Grok and saved as the access token
-5. Exit 0 = success; exit non-zero = Grok falls back to interactive login
+5. Exit 0 = success; exit non-zero = Grok tries the next configured credential source. It does not invoke `grok login` in this build.
 
 ### The stdout / stderr Contract
 
@@ -205,15 +202,13 @@ echo "{\"access_token\": \"$TOKEN\", \"expires_in\": 3600}"
 
 ## Device Code Flow
 
-For headless environments (SSH sessions, Docker containers, remote VMs) where no browser is available locally:
+The standalone `grok login --device-auth` / `--device-code` entrypoint is disabled in this build.
 
-```bash
-grok login --device-auth    # or: grok login --device-code
-```
+For headless environments (SSH sessions, Docker containers, remote VMs), use one of these instead:
 
-This prints a URL and code to the terminal. Open the URL on any device, enter the code, and complete authentication. Grok polls until the login is confirmed.
-
-You can also implement the device-code flow through an [External Auth Provider](#external-auth-provider) for full control.
+- Configure the provider with `grok provider` ahead of time and store credentials in `~/.grok/config.toml`
+- Export provider credentials via environment variables such as `XAI_API_KEY`
+- Implement the device-code flow through an [External Auth Provider](#external-auth-provider) for full control
 
 ---
 
@@ -248,14 +243,14 @@ Grok picks up changes to `~/.grok/auth.json` automatically. If you update creden
 Grok resolves credentials for each request in this order, highest to lowest:
 
 1. **Per-model `api_key` or `env_key`** -- set under `[model.<name>]` in `config.toml`. Wins whenever present.
-2. **Active session token** -- obtained through browser, OIDC/OAuth2, or external-provider login and stored in `~/.grok/auth.json`.
+2. **Active session token** -- obtained through OIDC/OAuth2 or external-provider login and stored in `~/.grok/auth.json` when those advanced flows are configured.
 3. **`XAI_API_KEY`** -- fallback when no session token is active.
 
 When more than one login flow is configured, Grok populates the session token from the first available source, highest to lowest:
 
 1. **External auth provider** (`auth_provider_command`)
 2. **Enterprise OIDC** -- when OIDC is configured, through `[grok_com_config.oidc]` in `config.toml` or the `GROK_OIDC_ISSUER` and `GROK_OIDC_CLIENT_ID` environment variables
-3. **SpaceXAI OAuth2 browser login** -- the default
+3. **SpaceXAI OAuth2 browser login** -- only when your deployment still enables that flow
 
 During a session, the active method handles all mid-session refreshes.
 
@@ -294,7 +289,7 @@ RUST_LOG=debug grok -p "hello" 2> /tmp/grok.log
 
 ### Common fixes
 
-- **"Authentication failed"** -- Run `grok logout` to clear cached credentials, then `grok login` to sign in again.
+- **"Authentication failed"** -- Run `grok logout`, then re-run `grok provider` or fix the relevant entries in `~/.grok/config.toml`.
 - **Token expires too quickly** -- Set `auth_token_ttl` or return `expires_in` in your auth provider's JSON output.
 - **OIDC redirect fails** -- Ensure your IdP allows loopback redirect URIs (`http://127.0.0.1/callback`).
 - **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.
