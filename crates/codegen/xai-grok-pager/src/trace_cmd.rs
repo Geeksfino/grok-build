@@ -427,8 +427,8 @@ async fn run_upload(
                 "trace_cmd: no upload credentials available"
             );
             anyhow::bail!(
-                "No upload credentials. Run `grok login` or set a deployment key. \
-                 See {} for upload overrides.",
+                "No upload credentials. Run `grok provider` or set a deployment key \
+                 in ~/.grok/config.toml. See {} for upload overrides.",
                 crate::util::display_user_grok_path("docs/user-guide")
             );
         }

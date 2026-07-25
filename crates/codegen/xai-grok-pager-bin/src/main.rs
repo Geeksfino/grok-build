@@ -154,8 +154,7 @@ async fn run_setup_command(json: bool) {
     if !managed_config::has_principal() {
         eprintln!("No deployment key or team sign-in found.");
         eprintln!();
-        eprintln!("To install managed configuration, sign in with a team using `grok login`,");
-        eprintln!("or set a deployment key:");
+        eprintln!("To install managed configuration, set a deployment key:");
         eprintln!();
         if cfg!(unix) {
             eprintln!("  export GROK_DEPLOYMENT_KEY=<your-key>");
@@ -431,8 +430,8 @@ async fn run_workspace_mgmt(args: WorkspaceMgmtArgs) -> Result<()> {
         WorkspaceGate::Unknown => {
             anyhow::bail!(
                 "Could not load your settings for `grok workspace`. Check your \
-             network connection (run `grok login` if you are signed out), then \
-             try again."
+             network connection, then run `grok provider` or review \
+             ~/.grok/config.toml and try again."
             )
         }
     }
@@ -534,7 +533,7 @@ async fn workspace_start(
     ensure_authenticated(
         &agent_config.grok_com_config,
         false,
-        Some("No cached credentials found. Run `grok login` first."),
+        Some("No cached credentials found. Run `grok provider` or add credentials in ~/.grok/config.toml."),
     )
     .await?;
     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
