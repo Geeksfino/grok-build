@@ -40,3 +40,9 @@ All passed.
 ## Concerns
 
 - The shell README still documents `auth.json` for advanced first-party session/proxy use; that remains intentional, but it is no longer described as the default fresh-install path.
+
+## Review follow-up
+
+- Tightened `apply_tier_restrictions()` so slash-command / voice SuperGrok upsells only apply when a first-party authenticated session exists.
+- Added pager regression test `restricted_command_without_authenticated_session_does_not_open_upsell` to keep cold-start and BYOK users out of the restricted-command modal path.
+- Updated `01-getting-started.md` and `02-authentication.md` so first run points to `grok provider` / `config.toml`, `grok login` is described as disabled, and `grok setup` stays reserved for managed team config.

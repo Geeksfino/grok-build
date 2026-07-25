@@ -1453,7 +1453,8 @@ impl AppView {
     /// `x.ai/settings/update` handler when the subscription tier changes, so
     /// a mid-session upgrade lifts the restrictions without a restart.
     pub fn apply_tier_restrictions(&mut self) {
-        let restricted = self.team_name.is_none()
+        let restricted = self.has_authenticated_session
+            && self.team_name.is_none()
             && !self.is_api_key_auth
             && is_restricted_tier(self.subscription_tier.as_deref());
         let names: Vec<String> = if restricted {
