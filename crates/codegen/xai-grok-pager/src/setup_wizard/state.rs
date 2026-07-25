@@ -12,7 +12,6 @@ pub enum SetupWizardPhase {
     EditFields,
     Validating,
     Error(String),
-    Done,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,10 +234,6 @@ impl SetupWizardState {
 
     pub fn finish_with_error(&mut self, message: impl Into<String>) {
         self.phase = SetupWizardPhase::Error(message.into());
-    }
-
-    pub fn mark_done(&mut self) {
-        self.phase = SetupWizardPhase::Done;
     }
 
     pub fn clear_error_state(&mut self) {

@@ -82,17 +82,25 @@ pub fn handle_setup_wizard_input(
     if key.kind == KeyEventKind::Release {
         return SetupWizardInputOutcome::Unchanged;
     }
-    if is_quit_key(key) {
-        return SetupWizardInputOutcome::Action(Action::Quit);
-    }
 
     match wizard.phase() {
-        SetupWizardPhase::SelectPreset => handle_select_preset_key(key, wizard),
-        SetupWizardPhase::Validating => SetupWizardInputOutcome::Unchanged,
+        SetupWizardPhase::SelectPreset => {
+            if is_quit_key(key) {
+                SetupWizardInputOutcome::Action(Action::Quit)
+            } else {
+                handle_select_preset_key(key, wizard)
+            }
+        }
+        SetupWizardPhase::Validating => {
+            if is_quit_key(key) {
+                SetupWizardInputOutcome::Action(Action::Quit)
+            } else {
+                SetupWizardInputOutcome::Unchanged
+            }
+        }
         SetupWizardPhase::EditFields | SetupWizardPhase::Error(_) => {
             handle_edit_fields_key(key, wizard)
         }
-        SetupWizardPhase::Done => SetupWizardInputOutcome::Unchanged,
     }
 }
 
@@ -131,7 +139,6 @@ pub fn render_setup_wizard(
         SetupWizardPhase::EditFields
         | SetupWizardPhase::Error(_)
         | SetupWizardPhase::Validating => render_edit_fields(sections[1], buf, wizard, &theme),
-        SetupWizardPhase::Done => None,
     };
     render_footer(sections[2], buf, wizard, &theme);
 
@@ -179,6 +186,9 @@ fn handle_edit_fields_key(
     key: &crossterm::event::KeyEvent,
     wizard: &mut SetupWizardState,
 ) -> SetupWizardInputOutcome {
+    if is_forced_quit_key(key) || (is_quit_key(key) && !is_text_entry_focus(wizard.focus())) {
+        return SetupWizardInputOutcome::Action(Action::Quit);
+    }
     if crate::input::key::is_shift_tab(key) {
         wizard.focus_prev();
         return SetupWizardInputOutcome::Changed;
@@ -207,6 +217,8 @@ fn handle_edit_fields_key(
             if matches!(wizard.focus(), Some(EditFieldFocus::StoreKeyInConfig))
                 && wizard.toggle_store_key_in_config()
             {
+                SetupWizardInputOutcome::Changed
+            } else if wizard.insert_char(' ') {
                 SetupWizardInputOutcome::Changed
             } else {
                 SetupWizardInputOutcome::Unchanged
@@ -257,7 +269,6 @@ fn render_header(area: Rect, buf: &mut Buffer, wizard: &SetupWizardState, theme:
         SetupWizardPhase::EditFields => "2/2  Enter provider details and save",
         SetupWizardPhase::Error(_) => "2/2  Fix the highlighted problem and retry",
         SetupWizardPhase::Validating => "2/2  Validating and saving provider settings",
-        SetupWizardPhase::Done => "Done",
     };
     Paragraph::new(vec![
         Line::from(vec![Span::styled(
@@ -485,21 +496,56 @@ fn button_line(label: &str, active: bool, theme: &Theme) -> (String, Style, Opti
 }
 
 fn is_quit_key(key: &crossterm::event::KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('q'))
-        || (matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
-            && key.modifiers.contains(KeyModifiers::CONTROL))
+    is_plain_quit_key(key) || is_forced_quit_key(key)
+}
+
+fn is_plain_quit_key(key: &crossterm::event::KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('q')) && key.modifiers.is_empty()
+}
+
+fn is_forced_quit_key(key: &crossterm::event::KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn is_text_entry_focus(focus: Option<EditFieldFocus>) -> bool {
+    matches!(
+        focus,
+        Some(
+            EditFieldFocus::BaseUrl
+                | EditFieldFocus::Model
+                | EditFieldFocus::Name
+                | EditFieldFocus::ApiKey
+        )
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider_config_write::ProviderModelWrite;
+    use crossterm::event::KeyEvent;
 
     fn make_auth_method(id: &str, name: &str) -> acp::AuthMethod {
         acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
             acp::AuthMethodId::new(id),
             name.to_string(),
         ))
+    }
+
+    fn key_event(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn edit_fields_wizard(preset_id: &str) -> SetupWizardState {
+        let mut wizard = SetupWizardState::new();
+        wizard
+            .select_preset_by_id(preset_id)
+            .expect("preset exists");
+        wizard
+            .confirm_selected_preset()
+            .expect("advance to edit fields");
+        wizard
     }
 
     #[test]
@@ -562,5 +608,63 @@ mod tests {
         assert!(write.auth_not_required, "ollama should skip auth");
         assert_eq!(write.env_key, None);
         assert_eq!(write.api_key, None);
+    }
+
+    #[test]
+    fn q_in_model_and_api_key_fields_inserts_text_without_quitting() {
+        let mut wizard = edit_fields_wizard("openai");
+        wizard.edit_fields_mut().expect("edit fields").focus = EditFieldFocus::Model;
+
+        let outcome = handle_setup_wizard_input(
+            &key_event(KeyCode::Char('q'), KeyModifiers::NONE),
+            &mut wizard,
+        );
+
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        assert_eq!(fields.model, "q");
+        assert!(matches!(wizard.phase(), SetupWizardPhase::EditFields));
+
+        wizard.edit_fields_mut().expect("edit fields").focus = EditFieldFocus::ApiKey;
+        let outcome = handle_setup_wizard_input(
+            &key_event(KeyCode::Char('q'), KeyModifiers::NONE),
+            &mut wizard,
+        );
+
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        assert_eq!(fields.api_key_input, "q");
+        assert!(matches!(wizard.phase(), SetupWizardPhase::EditFields));
+    }
+
+    #[test]
+    fn space_in_display_name_field_inserts_space() {
+        let mut wizard = edit_fields_wizard("openai");
+        wizard.edit_fields_mut().expect("edit fields").focus = EditFieldFocus::Name;
+
+        let outcome = handle_setup_wizard_input(
+            &key_event(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut wizard,
+        );
+
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        assert_eq!(fields.name, "OpenAI ");
+        assert!(!fields.store_key_in_config);
+    }
+
+    #[test]
+    fn space_on_store_key_checkbox_toggles_value() {
+        let mut wizard = edit_fields_wizard("openai");
+        wizard.edit_fields_mut().expect("edit fields").focus = EditFieldFocus::StoreKeyInConfig;
+
+        let outcome = handle_setup_wizard_input(
+            &key_event(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut wizard,
+        );
+
+        assert!(matches!(outcome, SetupWizardInputOutcome::Changed));
+        let fields = wizard.edit_fields().expect("edit fields should remain active");
+        assert!(fields.store_key_in_config);
     }
 }
