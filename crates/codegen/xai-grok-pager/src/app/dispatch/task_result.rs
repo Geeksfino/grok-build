@@ -225,7 +225,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             Ok(completion) => {
                 crate::setup_wizard::apply_setup_wizard_success(
                     app,
-                    completion.transient_env_notice,
+                    completion.post_setup_notice,
                 );
                 if app.session_startup_allowed() {
                     drain_startup_actions(app)

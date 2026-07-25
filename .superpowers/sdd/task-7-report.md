@@ -75,3 +75,23 @@ These failures are in untouched command-palette, picker, and scrollback renderin
 ### Focused verification that passed
 
 - `cargo test -p xai-grok-pager setup_wizard::tests::`
+
+## Review follow-up: success-path safety and reconnect logging
+
+- Removed the `Effect::SubmitSetupWizard` process-env mutation path; the effect now validates, writes config, reconnects, and returns a post-setup notice only.
+- Changed setup-wizard submission building so a typed key with `store_key_in_config = false` still persists `api_key` when the configured `env_key` is currently unset, preserving immediate reconnect without `std::env::set_var`.
+- Renamed the success notice field from `transient_env_notice` to `post_setup_notice` to match the new behavior.
+- Reworked `crates/codegen/xai-grok-pager/src/unified_log.rs` to keep the sender in `Mutex<Option<AcpAgentTx>>`, spawn its flush loop once, and allow `set_sender(...)` rebinding after reconnect.
+- Rebound the logger sender in `app/event_loop.rs` immediately before swapping `app.acp_tx` to the new ACP connection.
+
+### Added focused regression tests
+
+- `setup_wizard::tests::typed_api_key_without_exported_env_is_persisted_for_reconnect`
+- `unified_log::tests::set_sender_rebinds_future_flushes`
+
+### Focused verification that passed
+
+- `cargo test -p xai-grok-pager typed_api_key_without_exported_env_is_persisted_for_reconnect`
+- `cargo test -p xai-grok-pager setup_wizard_submit_complete_success_clears_wizard_and_replays_startup`
+- `cargo test -p xai-grok-pager setup_wizard_submit_complete_error_keeps_wizard_open`
+- `cargo test -p xai-grok-pager set_sender_rebinds_future_flushes`

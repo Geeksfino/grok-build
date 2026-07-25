@@ -154,7 +154,7 @@ fn setup_wizard_submit_complete_success_clears_wizard_and_replays_startup() {
         Action::TaskComplete(TaskResult::SetupWizardSubmitComplete {
             result: Ok(crate::setup_wizard::SetupWizardCompletion {
                 connection: None,
-                transient_env_notice: Some(notice.clone()),
+                post_setup_notice: Some(notice.clone()),
             }),
         }),
         &mut app,

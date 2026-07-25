@@ -1778,6 +1778,7 @@ pub(crate) async fn run(
                             voice_auth_factory = connection.auth_manager.clone();
 
                             app.leader_mode = leader_status_rx.is_some();
+                            crate::unified_log::set_sender(connection.tx.clone());
                             app.acp_tx = connection.tx.clone();
                             app.models = connection.models;
                             app.bootstrap_acp_commands = connection.available_commands;

@@ -27,13 +27,13 @@ use crate::theme::Theme;
 
 pub struct SetupWizardCompletion {
     pub connection: Option<crate::acp::AcpConnection>,
-    pub transient_env_notice: Option<String>,
+    pub post_setup_notice: Option<String>,
 }
 
 impl fmt::Debug for SetupWizardCompletion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SetupWizardCompletion")
-            .field("transient_env_notice", &self.transient_env_notice)
+            .field("post_setup_notice", &self.post_setup_notice)
             .finish_non_exhaustive()
     }
 }
@@ -145,11 +145,11 @@ pub fn render_setup_wizard(
     SetupWizardRenderResult { cursor_pos }
 }
 
-pub fn apply_setup_wizard_success(app: &mut AppView, transient_env_notice: Option<String>) {
+pub fn apply_setup_wizard_success(app: &mut AppView, post_setup_notice: Option<String>) {
     app.setup_wizard = None;
     app.auth_state = AuthState::Done;
     app.welcome_prompt_focused = !app.is_access_blocked();
-    if let Some(message) = transient_env_notice {
+    if let Some(message) = post_setup_notice {
         app.startup_warnings.push(crate::startup::StartupWarning {
             severity: crate::startup::WarningSeverity::Info,
             message,
@@ -525,6 +525,30 @@ mod tests {
     use super::*;
     use crate::provider_config_write::ProviderModelWrite;
     use crossterm::event::KeyEvent;
+    use std::ffi::OsString;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            unsafe { std::env::remove_var(key) };
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                unsafe { std::env::set_var(self.key, value) };
+            } else {
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
 
     fn make_auth_method(id: &str, name: &str) -> acp::AuthMethod {
         acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
@@ -608,6 +632,31 @@ mod tests {
         assert!(write.auth_not_required, "ollama should skip auth");
         assert_eq!(write.env_key, None);
         assert_eq!(write.api_key, None);
+    }
+
+    #[test]
+    #[serial_test::serial(SETUP_WIZARD_ENV)]
+    fn typed_api_key_without_exported_env_is_persisted_for_reconnect() {
+        let _env_guard = EnvVarGuard::unset("OPENAI_API_KEY");
+        let mut wizard = edit_fields_wizard("openai");
+        wizard.set_model("gpt-4.1");
+        let fields = wizard.edit_fields_mut().expect("edit fields should be active");
+        fields.api_key_input = "sk-test-value".into();
+        fields.store_key_in_config = false;
+
+        let submission = wizard
+            .build_submission()
+            .expect("typed key should produce a submission");
+
+        assert_eq!(submission.write.env_key.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(submission.write.api_key.as_deref(), Some("sk-test-value"));
+        assert!(
+            submission
+                .post_setup_notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("OPENAI_API_KEY")),
+            "env-fallback success should explain why the typed key was persisted"
+        );
     }
 
     #[test]

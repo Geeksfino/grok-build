@@ -1783,8 +1783,7 @@ pub(crate) fn execute(
                     let crate::setup_wizard::SetupWizardSubmission {
                         validate,
                         write,
-                        transient_env_export,
-                        transient_env_notice,
+                        post_setup_notice,
                     } = submission;
                     let result = async move {
                         crate::setup_wizard::validate::validate_provider_endpoint(&validate)
@@ -1805,13 +1804,6 @@ pub(crate) fn execute(
                         )))?
                         .map_err(|e| sanitize_user_error(&e.to_string()))?;
 
-                        if let Some(export) = transient_env_export {
-                            // The reconnect needs the shell child process to observe the key.
-                            unsafe {
-                                std::env::set_var(export.key, export.value);
-                            }
-                        }
-
                         let cancel = tokio_util::sync::CancellationToken::new();
                         let connection = if use_leader {
                             let raw_config = xai_grok_shell::config::load_effective_config()
@@ -1829,7 +1821,7 @@ pub(crate) fn execute(
 
                         Ok(crate::setup_wizard::SetupWizardCompletion {
                             connection: Some(connection),
-                            transient_env_notice,
+                            post_setup_notice,
                         })
                     }
                     .await;

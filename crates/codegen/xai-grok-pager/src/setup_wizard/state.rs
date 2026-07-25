@@ -25,18 +25,11 @@ pub enum EditFieldFocus {
     Back,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvVarExport {
-    pub key: String,
-    pub value: String,
-}
-
 #[derive(Debug)]
 pub struct SetupWizardSubmission {
     pub validate: ValidateRequest,
     pub write: ProviderModelWrite,
-    pub transient_env_export: Option<EnvVarExport>,
-    pub transient_env_notice: Option<String>,
+    pub post_setup_notice: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,11 +345,7 @@ impl SetupWizardState {
         } else {
             fields.name.trim().to_string()
         };
-        let stored_api_key = if fields.store_key_in_config {
-            non_empty(fields.api_key_input.trim()).map(str::to_string)
-        } else {
-            None
-        };
+        let stored_api_key = stored_api_key(fields);
         Ok(ProviderModelWrite {
             catalog_id: format!("{}-{}", fields.preset_id, sanitize_catalog_component(model)),
             model: model.to_string(),
@@ -375,38 +364,46 @@ impl SetupWizardState {
     }
 
     pub fn build_submission(&self) -> Result<SetupWizardSubmission, String> {
+        let Some(fields) = self.edit_fields() else {
+            return Err("No preset selected".to_string());
+        };
         let validate = self.build_validate_request()?;
         let write = self.build_provider_write()?;
-        let transient_env_export = self.transient_env_export();
-        let transient_env_notice = transient_env_export.as_ref().map(|export| {
-            format!(
-                "Saved provider config. Exported {} for this run only; add it to your shell profile to persist it.",
-                export.key
-            )
-        });
+        let post_setup_notice = env_fallback_notice(fields);
         Ok(SetupWizardSubmission {
             validate,
             write,
-            transient_env_export,
-            transient_env_notice,
+            post_setup_notice,
         })
     }
+}
 
-    fn transient_env_export(&self) -> Option<EnvVarExport> {
-        let fields = self.edit_fields()?;
-        if fields.auth_not_required || fields.store_key_in_config {
-            return None;
-        }
-        let key_name = fields.env_key_name.as_ref()?;
-        let entered = non_empty(fields.api_key_input.trim())?;
-        if std::env::var_os(key_name).is_some() {
-            return None;
-        }
-        Some(EnvVarExport {
-            key: key_name.clone(),
-            value: entered.to_string(),
-        })
+fn stored_api_key(fields: &EditFieldsState) -> Option<String> {
+    let entered = non_empty(fields.api_key_input.trim()).map(str::to_string)?;
+    if fields.store_key_in_config || should_persist_typed_key_for_env_fallback(fields) {
+        Some(entered)
+    } else {
+        None
     }
+}
+
+fn env_fallback_notice(fields: &EditFieldsState) -> Option<String> {
+    let env_key = fields.env_key_name.as_deref()?;
+    should_persist_typed_key_for_env_fallback(fields).then(|| {
+        format!(
+            "Saved provider config. {env_key} is not exported in this environment, so the typed API key was saved in config for reconnect."
+        )
+    })
+}
+
+fn should_persist_typed_key_for_env_fallback(fields: &EditFieldsState) -> bool {
+    !fields.auth_not_required
+        && !fields.store_key_in_config
+        && non_empty(fields.api_key_input.trim()).is_some()
+        && fields
+            .env_key_name
+            .as_ref()
+            .is_some_and(|key_name| std::env::var_os(key_name).is_none())
 }
 
 fn resolve_probe_api_key(fields: &EditFieldsState) -> Result<Option<String>, String> {
