@@ -1772,9 +1772,9 @@ mod tests {
         );
     }
     /// INVARIANT: the `/models` fetch URL + auth scheme match the auth mode —
-    /// Session/Deployment → cli-chat-proxy (Session auth), never the inference host;
-    /// ApiKey → `xai_api_base_url` (ApiKey, public default when unset); a custom
-    /// models endpoint → that URL verbatim.
+    /// Session/Deployment → explicit cli-chat-proxy (Session auth) or `""` when
+    /// unset, never the inference host; ApiKey → `xai_api_base_url` (ApiKey,
+    /// public default when unset); a custom models endpoint → that URL verbatim.
     #[test]
     #[serial_test::serial]
     fn models_fetch_endpoint_matches_auth_mode() {
@@ -1795,10 +1795,10 @@ mod tests {
             .unwrap(),
         );
         let session = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Session);
-        assert_eq!(session.url, "https://cli-chat-proxy.grok.com/v1/models");
+        assert_eq!(session.url, "");
         assert_eq!(session.auth, EndpointAuth::Session);
         let deployment = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Deployment);
-        assert_eq!(deployment.url, "https://cli-chat-proxy.grok.com/v1/models");
+        assert_eq!(deployment.url, "");
         assert_eq!(deployment.auth, EndpointAuth::Session);
         let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
         assert_eq!(api.url, "https://inference.acme-corp.example/xai/v1/models");
@@ -1819,11 +1819,11 @@ mod tests {
         assert_eq!(ep.url, "https://models.acme.com/v1/models");
         assert_eq!(ep.auth, EndpointAuth::ApiKey);
     }
-    /// REGRESSION: `grok setup` must send the deployment key to
-    /// the proxy, never the inference endpoint.
+    /// REGRESSION: `grok setup` must never send the deployment key to
+    /// the inference endpoint; without an explicit proxy it stays idle.
     #[test]
     #[serial_test::serial]
-    fn deployment_config_url_uses_cli_chat_proxy_when_not_overridden() {
+    fn deployment_config_url_stays_empty_when_proxy_not_overridden() {
         use crate::agent::config::EndpointsConfig;
         for k in [
             "GROK_CLI_CHAT_PROXY_BASE_URL",
@@ -1840,7 +1840,7 @@ mod tests {
         )
         .unwrap();
         let url = EndpointsConfig::from_config_value(&managed).resolve_managed_config_url();
-        assert_eq!(url, "https://cli-chat-proxy.grok.com/v1/deployment/config");
+        assert_eq!(url, "");
         assert!(
             !url.contains("acme-corp"),
             "deployment key would be sent to the inference host: {url}"
