@@ -639,6 +639,8 @@ pub(crate) async fn run(
         crate::setup_wizard::cold_start_needs_provider_setup(&connection.auth_methods, force_login);
     let needs_interactive_login = !needs_provider_setup && (connection.needs_login || force_login);
     if needs_provider_setup {
+        app.welcome_prompt_focused = false;
+        app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
         tracing::info!(
             methods_empty = connection.auth_methods.is_empty(),
             "auto-opening provider setup at startup"

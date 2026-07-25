@@ -450,6 +450,10 @@ fn open_setup_wizard_sets_cold_start_state() {
     assert!(effects.is_empty(), "opening setup wizard is pure state");
     assert!(app.setup_wizard.is_some(), "wizard state should be initialized");
     assert!(
+        !app.session_startup_allowed(),
+        "open setup wizard must keep deferred startup blocked"
+    );
+    assert!(
         !app.welcome_prompt_focused,
         "cold-start setup should move focus away from the prompt"
     );

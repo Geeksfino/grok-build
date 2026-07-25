@@ -868,12 +868,19 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
         && * m_id == model_id))
     );
 }
-/// The session-startup gate requires BOTH auth AND trust resolved. Trust is
-/// gated AFTER auth, so either one pending defers session creation.
+/// The session-startup gate requires auth, trust, and no setup wizard. Trust
+/// is gated AFTER auth, so either one pending — or an open cold-start provider
+/// setup wizard — defers session creation.
 #[test]
-fn session_startup_allowed_requires_auth_and_trust() {
+fn session_startup_allowed_requires_auth_trust_and_no_setup_wizard() {
     let mut app = test_app();
     assert!(app.session_startup_allowed());
+    app.setup_wizard = Some(crate::setup_wizard::SetupWizardState::new());
+    assert!(
+        !app.session_startup_allowed(),
+        "open setup wizard must block session startup",
+    );
+    app.setup_wizard = None;
     app.trust_state = TrustState::Pending {
         workspace: PathBuf::from("/x"),
     };

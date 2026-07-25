@@ -1094,9 +1094,13 @@ impl AppView {
     /// Whether deferred session-startup actions may run: both auth AND folder
     /// trust must be resolved. Mirrors the auth gate at the session-creating
     /// startup sites; trust is gated AFTER auth so a pending trust question
-    /// defers session creation until answered.
+    /// defers session creation until answered. Cold-start provider setup uses
+    /// the same chokepoint so CLI/dashboard/session startup stays deferred
+    /// until the wizard closes.
     pub fn session_startup_allowed(&self) -> bool {
-        matches!(self.auth_state, AuthState::Done) && matches!(self.trust_state, TrustState::Done)
+        matches!(self.auth_state, AuthState::Done)
+            && matches!(self.trust_state, TrustState::Done)
+            && self.setup_wizard.is_none()
     }
     /// Extract `GateInfo` from `RemoteSettings`.
     pub fn gate_from_settings(
