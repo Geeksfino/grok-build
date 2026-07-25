@@ -966,12 +966,15 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::LogoutComplete => {
             app.auth_state = AuthState::Pending { error: None };
+            app.has_authenticated_session = false;
             app.access_gate_shown_logged = false;
             app.announcement_cta_impressions_logged.clear();
             app.gate = None;
             app.pending_gate_verification = None;
             app.last_subscription_check_at = None;
             app.login_method_id = None;
+            app.recompute_usage_visibility();
+            app.apply_tier_restrictions();
             ensure_login_method(app);
             app.auth_clipboard_copied = false;
             let effects = dispatch_exit_session(app);

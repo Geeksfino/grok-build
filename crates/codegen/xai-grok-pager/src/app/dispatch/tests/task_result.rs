@@ -2072,6 +2072,26 @@ fn logout_clears_pending_gate_verification() {
     assert!(app.last_subscription_check_at.is_none());
 }
 
+/// Logout must drop session-derived billing visibility and tier restrictions
+/// so stale SuperGrok CTAs cannot linger on the welcome screen.
+#[test]
+fn logout_clears_authenticated_billing_state() {
+    let mut app = test_app_with_agent();
+    app.has_authenticated_session = true;
+    app.subscription_tier = Some("Free".into());
+    app.usage_visible = true;
+    app.apply_tier_restrictions();
+    assert!(!app.tier_restricted_commands.is_empty());
+    assert!(app.is_voice_tier_restricted());
+
+    dispatch_task_result(TaskResult::LogoutComplete, &mut app);
+
+    assert!(!app.has_authenticated_session);
+    assert!(!app.usage_visible);
+    assert!(app.tier_restricted_commands.is_empty());
+    assert!(!app.is_voice_tier_restricted());
+}
+
 /// `apply_setting_rollback` on a known key reverts the in-memory
 /// cache without emitting any new effects.
 #[test]

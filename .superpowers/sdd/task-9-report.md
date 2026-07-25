@@ -46,3 +46,11 @@ All passed.
 - Tightened `apply_tier_restrictions()` so slash-command / voice SuperGrok upsells only apply when a first-party authenticated session exists.
 - Added pager regression test `restricted_command_without_authenticated_session_does_not_open_upsell` to keep cold-start and BYOK users out of the restricted-command modal path.
 - Updated `01-getting-started.md` and `02-authentication.md` so first run points to `grok provider` / `config.toml`, `grok login` is described as disabled, and `grok setup` stays reserved for managed team config.
+- `TaskResult::LogoutComplete` now clears `has_authenticated_session`, recomputes `usage_visible`, and reapplies tier restrictions so stale SuperGrok CTAs disappear immediately after logout.
+- Added pager regression test `logout_clears_authenticated_billing_state` to lock the logout reset behavior.
+- Updated `14-headless-mode.md` and `docs/user-guide/README.md` so headless/default auth guidance points to `grok provider`, `~/.grok/config.toml`, and API keys; `grok setup` remains the managed team bootstrap path.
+
+Additional focused verification:
+
+- `cargo test -p xai-grok-pager logout_ -- --nocapture`
+- `cargo test -p xai-grok-pager restricted_command_ -- --nocapture`
