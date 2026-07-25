@@ -1116,6 +1116,24 @@ impl AppView {
             && self.team_name.is_none()
             && !self.is_api_key_auth;
     }
+    /// Clear auth-meta-derived first-party billing, team, and gate state.
+    pub(crate) fn clear_authenticated_session_state(&mut self) {
+        self.has_authenticated_session = false;
+        self.team_id = None;
+        self.team_name = None;
+        self.is_zdr = false;
+        self.team_role = None;
+        self.coding_data_retention_opt_out = false;
+        self.access_gate_shown_logged = false;
+        self.announcement_cta_impressions_logged.clear();
+        self.gate = None;
+        self.pending_gate_verification = None;
+        self.subscription_tier = None;
+        self.paywall_check_started = None;
+        self.last_subscription_check_at = None;
+        self.recompute_usage_visibility();
+        self.apply_tier_restrictions();
+    }
     /// Extract `GateInfo` from `RemoteSettings`.
     pub fn gate_from_settings(
         rs: &xai_grok_shell::util::config::RemoteSettings,
@@ -6411,6 +6429,44 @@ pub(crate) mod tests {
         let meta = xai_grok_shell::auth::AuthMeta::default();
         app.apply_auth_meta(&meta);
         assert!(app.usage_visible);
+    }
+    #[test]
+    fn clear_authenticated_session_state_clears_billing_and_team_state() {
+        let mut app = test_app();
+        advertise_media_tools(&mut app);
+        app.apply_auth_meta(&xai_grok_shell::auth::AuthMeta {
+            team_id: Some("team-uuid".into()),
+            team_name: Some("Acme Corp".into()),
+            subscription_tier: Some("Free".into()),
+            gate: Some(xai_grok_shell::auth::GateInfo {
+                message: "Subscribe".into(),
+                url: None,
+                label: None,
+            }),
+            is_zdr: true,
+            team_role: Some("Admin".into()),
+            coding_data_retention_opt_out: true,
+            ..Default::default()
+        });
+        app.paywall_check_started = Some(std::time::Instant::now());
+        app.last_subscription_check_at = Some(std::time::Instant::now());
+
+        app.clear_authenticated_session_state();
+
+        assert!(!app.has_authenticated_session);
+        assert!(app.team_id.is_none());
+        assert!(app.team_name.is_none());
+        assert!(!app.is_zdr);
+        assert!(app.team_role.is_none());
+        assert!(!app.coding_data_retention_opt_out);
+        assert!(app.gate.is_none());
+        assert!(app.pending_gate_verification.is_none());
+        assert!(app.subscription_tier.is_none());
+        assert!(app.paywall_check_started.is_none());
+        assert!(app.last_subscription_check_at.is_none());
+        assert!(!app.usage_visible);
+        assert!(app.tier_restricted_commands.is_empty());
+        assert!(!app.is_voice_tier_restricted());
     }
     #[test]
     fn apply_auth_meta_clears_api_key_flag_and_shows_usage_on_personal_login() {

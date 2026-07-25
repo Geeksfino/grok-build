@@ -54,3 +54,15 @@ Additional focused verification:
 
 - `cargo test -p xai-grok-pager logout_ -- --nocapture`
 - `cargo test -p xai-grok-pager restricted_command_ -- --nocapture`
+
+## Review follow-up: reconnect/no-auth-meta reset
+
+- Extracted `AppView::clear_authenticated_session_state()` so logout and the event-loop no-`auth_meta` reconnect path clear the same first-party billing/team/gate state.
+- Reconnect/startup no-`auth_meta` handling now drops stale `team_id`, `team_name`, `subscription_tier`, gate state, pending verification, and paywall/watch bookkeeping before recomputing usage visibility.
+- Added focused pager regression test `clear_authenticated_session_state_clears_billing_and_team_state`, and strengthened `logout_clears_authenticated_billing_state` to assert the shared teardown clears team/tier/gate fields too.
+
+Verification:
+
+- `cargo test -p xai-grok-pager clear_authenticated_session_state_clears_billing_and_team_state`
+- `cargo test -p xai-grok-pager logout_clears_authenticated_billing_state`
+- `cargo test -p xai-grok-pager apply_auth_meta_`
