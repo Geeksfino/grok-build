@@ -5419,6 +5419,19 @@ reasoning_effort = "low"
             api_base_url: api_base_url.map(|s| s.to_string()),
         }
     }
+    const TEST_MODEL_ID: &str = "test-default-model";
+    const TEST_SHARED_MODEL_SLUG: &str = "shared-model-slug";
+    const PREFETCH_ONLY_MODEL_ID: &str = "prefetched-only-model";
+
+    fn routing_test_model(model: &str) -> ModelEntry {
+        test_model_entry(
+            model,
+            CLI_CHAT_PROXY_BASE_URL_DEFAULT,
+            None,
+            None,
+            Some(XAI_API_BASE_URL_DEFAULT),
+        )
+    }
     /// The effective-model RE-support lookup must use the model ACTUALLY used:
     /// the resolved aux model when present, else the session model (an
     /// unresolvable slug ⇒ aux `None` ⇒ session model's capability wins).
@@ -5685,7 +5698,7 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn config_toml_env_key_array_parses() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -5956,7 +5969,7 @@ reasoning_effort = "low"
     }
     #[test]
     fn user_override_adds_api_key_to_default_model() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let raw_config: toml::Value = toml::from_str(&format!(
             r#"
             [model."{dm}"]
@@ -6009,7 +6022,7 @@ reasoning_effort = "low"
     #[test]
     fn user_override_parses_compaction_at_tokens_from_toml() {
         use xai_grok_sampling_types::CompactionAtTokens;
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let raw_config: toml::Value = toml::from_str(&format!(
             r#"
             [model."{dm}"]
@@ -6046,7 +6059,7 @@ reasoning_effort = "low"
     #[test]
     fn user_override_parses_compactions_remaining_from_toml() {
         use xai_grok_sampling_types::CompactionsRemaining;
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let raw_config: toml::Value = toml::from_str(&format!(
             r#"
             [model."{dm}"]
@@ -7243,7 +7256,7 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn e2e_user_overrides_default_model_key_with_custom_endpoint() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -7278,7 +7291,7 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn e2e_config_toml_model_overrides_default() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -7300,7 +7313,7 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_user_overrides_default_model_with_api_key() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -7384,11 +7397,8 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_default_model_with_session_routes_to_proxy() {
-        let (_, models) = resolve_models_from_toml("", None);
-        let model = models
-            .get(crate::models::default_model())
-            .expect("default model should exist");
-        let sampling = resolve_sampling(model, Some("session-token-123"));
+        let model = routing_test_model(TEST_MODEL_ID);
+        let sampling = resolve_sampling(&model, Some("session-token-123"));
         assert_eq!(sampling.api_key.as_deref(), Some("session-token-123"));
         assert_eq!(
             sampling.base_url, "https://cli-chat-proxy.grok.com/v1",
@@ -7398,12 +7408,9 @@ reasoning_effort = "low"
     #[test]
     #[serial]
     fn e2e_default_model_with_external_api_key_routes_to_api_xai() {
-        let (_, models) = resolve_models_from_toml("", None);
-        let model = models
-            .get(crate::models::default_model())
-            .expect("default model should exist");
+        let model = routing_test_model(TEST_MODEL_ID);
         unsafe { std::env::set_var("XAI_API_KEY", "xai-external-key") };
-        let sampling = resolve_sampling(model, None);
+        let sampling = resolve_sampling(&model, None);
         assert_eq!(sampling.api_key.as_deref(), Some("xai-external-key"));
         assert_eq!(
             sampling.base_url, "https://api.x.ai/v1",
@@ -7413,7 +7420,7 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_user_config_overrides_prefetched_model() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let mut prefetched = IndexMap::new();
         prefetched.insert(
             dm.to_string(),
@@ -7501,7 +7508,18 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_duplicate_model_field_both_entries_survive() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
+        let mut prefetched = IndexMap::new();
+        prefetched.insert(
+            dm.to_string(),
+            test_model_entry(
+                dm,
+                "https://cli-chat-proxy.grok.com/v1",
+                None,
+                None,
+                Some("https://api.x.ai/v1"),
+            ),
+        );
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -7512,7 +7530,7 @@ reasoning_effort = "low"
             api_key = "enterprise-key"
             "#,
             ),
-            None,
+            Some(prefetched),
         );
         assert!(models.contains_key(dm), "default entry should still exist");
         assert!(
@@ -7554,8 +7572,8 @@ reasoning_effort = "low"
             "enterprise model should be present"
         );
         assert!(
-            !resolved.contains_key(crate::models::default_model()),
-            "xAI default must not leak into enterprise model list"
+            resolved.keys().all(|k| k == "acme-model"),
+            "no baked-in defaults should leak into enterprise model list"
         );
         assert_eq!(resolved.len(), 1, "only the prefetched enterprise model");
     }
@@ -7564,8 +7582,8 @@ reasoning_effort = "low"
         let cfg = Config::default();
         let resolved = resolve_model_list(&cfg, None);
         assert!(
-            resolved.contains_key(crate::models::default_model()),
-            "default model should be present when using default endpoint"
+            resolved.is_empty(),
+            "default endpoint should not inject models when the baked-in catalog is empty"
         );
     }
     #[test]
@@ -7574,7 +7592,7 @@ reasoning_effort = "low"
         models.insert(
             "default-grok".to_string(),
             test_model_entry(
-                crate::models::default_model(),
+                TEST_SHARED_MODEL_SLUG,
                 "https://cli-chat-proxy.grok.com/v1",
                 None,
                 None,
@@ -7584,7 +7602,7 @@ reasoning_effort = "low"
         models.insert(
             "acme-grok".to_string(),
             test_model_entry(
-                crate::models::default_model(),
+                TEST_SHARED_MODEL_SLUG,
                 "https://inference.example.com/v1",
                 Some("enterprise-key"),
                 None,
@@ -7608,7 +7626,7 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_enterprise_endpoints_plus_partial_model_override() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -7645,25 +7663,28 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_enterprise_endpoints_only_no_model_override() {
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
-            r#"
+            &format!(
+                r#"
             [endpoints]
             cli_chat_proxy_base_url = "https://enterprise-proxy.acme.com/v1"
             xai_api_base_url = "https://enterprise-api.acme.com/v1"
+            
+            [model."{dm}"]
             "#,
+            ),
             None,
         );
-        let model = models
-            .get(crate::models::default_model())
-            .expect("model should exist");
+        let model = models.get(dm).expect("model should exist");
         assert_eq!(
             model.info.base_url, "https://enterprise-proxy.acme.com/v1",
             "default model should use enterprise cli_chat_proxy_base_url"
         );
         assert_eq!(
             model.api_base_url.as_deref(),
-            Some("https://enterprise-api.acme.com/v1"),
-            "default model should use enterprise xai_api_base_url"
+            None,
+            "fallback entries without a bundled donor should not synthesize api_base_url"
         );
     }
     /// Unset every env var that `EndpointsConfig::default()` reads for endpoints,
@@ -7776,7 +7797,7 @@ reasoning_effort = "low"
     }
     #[test]
     fn e2e_user_override_explicit_base_url_wins_over_endpoints() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -10616,12 +10637,16 @@ default = "grok-4.5"
     }
     #[test]
     fn global_extra_headers_apply_to_model_without_override() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
-            r#"
+            &format!(
+                r#"
             [models]
-            extra_headers = { "X-Request-Tags" = "team=example,env=prod" }
+            extra_headers = {{ "X-Request-Tags" = "team=example,env=prod" }}
+            
+            [model."{dm}"]
             "#,
+            ),
             None,
         );
         let model = models.get(dm).expect("default model should exist");
@@ -10637,7 +10662,7 @@ default = "grok-4.5"
     }
     #[test]
     fn per_model_extra_headers_override_global_per_key() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -10668,7 +10693,7 @@ default = "grok-4.5"
     }
     #[test]
     fn per_model_extra_headers_override_global_case_insensitively() {
-        let dm = crate::models::default_model();
+        let dm = TEST_MODEL_ID;
         let (_, models) = resolve_models_from_toml(
             &format!(
                 r#"
@@ -10872,29 +10897,31 @@ default = "grok-4.5"
         );
     }
     #[test]
-    fn resolve_model_list_inherits_context_window_from_default_when_prefetched_has_fallback() {
+    fn resolve_model_list_keeps_prefetched_context_window_when_embedded_defaults_are_empty() {
         let cfg = Config::default();
         let default_cw = DEFAULT_CONTEXT_WINDOW;
-        let entry = prefetch_model_entry("grok-build", default_cw, ApiBackend::default());
+        let entry =
+            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, default_cw, ApiBackend::default());
         let mut prefetched = IndexMap::new();
-        prefetched.insert("grok-build".to_owned(), entry);
+        prefetched.insert(PREFETCH_ONLY_MODEL_ID.to_owned(), entry);
         let resolved = resolve_model_list(&cfg, Some(prefetched));
-        let entry = resolved.get("grok-build").expect("model must exist");
-        assert_ne!(
+        let entry = resolved.get(PREFETCH_ONLY_MODEL_ID).expect("model must exist");
+        assert_eq!(
             entry.info.context_window.get(),
             default_cw,
-            "context_window should have been inherited from hardcoded default, not left at DEFAULT_CONTEXT_WINDOW"
+            "without baked-in defaults there is no donor, so the prefetched value should stay unchanged"
         );
     }
     #[test]
     fn resolve_model_list_does_not_override_explicitly_set_context_window() {
         let cfg = Config::default();
         let explicit_cw = 65_536;
-        let entry = prefetch_model_entry("grok-build", explicit_cw, ApiBackend::default());
+        let entry =
+            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, explicit_cw, ApiBackend::default());
         let mut prefetched = IndexMap::new();
-        prefetched.insert("grok-build".to_owned(), entry);
+        prefetched.insert(PREFETCH_ONLY_MODEL_ID.to_owned(), entry);
         let resolved = resolve_model_list(&cfg, Some(prefetched));
-        let entry = resolved.get("grok-build").expect("model must exist");
+        let entry = resolved.get(PREFETCH_ONLY_MODEL_ID).expect("model must exist");
         assert_eq!(
             entry.info.context_window.get(),
             explicit_cw,
@@ -10902,29 +10929,25 @@ default = "grok-4.5"
         );
     }
     #[test]
-    fn resolve_model_list_inherits_agent_type_and_api_backend() {
+    fn resolve_model_list_keeps_prefetched_agent_type_and_api_backend_without_donor() {
         let cfg = Config::default();
         let default_cw = DEFAULT_CONTEXT_WINDOW;
-        let entry = prefetch_model_entry("grok-build", default_cw, ApiBackend::default());
+        let entry =
+            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, default_cw, ApiBackend::default());
         let mut prefetched = IndexMap::new();
-        prefetched.insert("grok-build".to_owned(), entry);
+        prefetched.insert(PREFETCH_ONLY_MODEL_ID.to_owned(), entry);
         let resolved = resolve_model_list(&cfg, Some(prefetched));
-        let entry = resolved.get("grok-build").expect("model must exist");
-        let defaults = default_model_entries(&EndpointsConfig::default());
-        if let Some(default) = defaults.get("grok-build") {
-            if default.info.agent_type != DEFAULT_AGENT_TYPE {
-                assert_eq!(
-                    entry.info.agent_type, default.info.agent_type,
-                    "agent_type should be inherited from default"
-                );
-            }
-            if default.info.api_backend != ApiBackend::default() {
-                assert_eq!(
-                    entry.info.api_backend, default.info.api_backend,
-                    "api_backend should be inherited from default"
-                );
-            }
-        }
+        let entry = resolved.get(PREFETCH_ONLY_MODEL_ID).expect("model must exist");
+        assert_eq!(
+            entry.info.agent_type,
+            default_agent_type(),
+            "without a baked-in donor the prefetched agent_type should remain unchanged"
+        );
+        assert_eq!(
+            entry.info.api_backend,
+            ApiBackend::default(),
+            "without a baked-in donor the prefetched api_backend should remain unchanged"
+        );
     }
     #[test]
     fn hub_config_default_has_no_url() {
@@ -10949,24 +10972,26 @@ default = "grok-4.5"
     #[test]
     fn resolve_model_list_prunes_bundled_entries_not_in_prefetch() {
         let cfg = Config::default();
-        let mut defs = default_model_entries(&EndpointsConfig::default());
         let mut p = IndexMap::new();
-        if let Some(e) = defs.shift_remove("grok-build") {
-            p.insert("grok-build".to_string(), e);
-        }
+        p.insert(
+            PREFETCH_ONLY_MODEL_ID.to_string(),
+            prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, 200_000, ApiBackend::default()),
+        );
         let resolved = resolve_model_list(&cfg, Some(p));
-        assert!(resolved.contains_key("grok-build"));
+        assert!(resolved.contains_key(PREFETCH_ONLY_MODEL_ID));
         let no_p = resolve_model_list(&cfg, None);
-        assert!(no_p.contains_key("grok-build"));
+        assert!(
+            no_p.is_empty(),
+            "the empty baked-in catalog should leave the base model list empty"
+        );
     }
     #[test]
     fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
         let cfg = Config::default();
-        let mut defs = default_model_entries(&EndpointsConfig::default());
+        let mut entry = prefetch_model_entry(PREFETCH_ONLY_MODEL_ID, 200_000, ApiBackend::default());
+        entry.info.supported_in_api = false;
         let mut p = IndexMap::new();
-        if let Some(e) = defs.shift_remove("grok-build") {
-            p.insert("grok-build".to_string(), e);
-        }
+        p.insert(PREFETCH_ONLY_MODEL_ID.to_string(), entry);
         let resolved = resolve_model_list(&cfg, Some(p));
         let sess: Vec<_> = resolved
             .values()
@@ -11010,6 +11035,10 @@ default = "grok-4.5"
     /// The config overlay must be visible to API-key users (env_key = BYOK).
     #[test]
     fn byok_config_overlay_visible_to_api_key_users() {
+        let mut prefetched = IndexMap::new();
+        let mut base = prefetch_model_entry("grok-build", 200_000, ApiBackend::default());
+        base.info.supported_in_api = false;
+        prefetched.insert("grok-build".to_string(), base);
         let raw: toml::Value = toml::from_str(
             r#"
             [model.grok-build]
@@ -11020,7 +11049,7 @@ default = "grok-4.5"
         )
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
-        let resolved = resolve_model_list(&cfg, None);
+        let resolved = resolve_model_list(&cfg, Some(prefetched));
         let entry = resolved.get("grok-build").expect("grok-build must exist");
         assert!(
             entry.visible_for_auth(false),
@@ -11032,6 +11061,10 @@ default = "grok-4.5"
     /// bundled supported_in_api flag. Only BYOK triggers the override.
     #[test]
     fn plain_config_overlay_preserves_bundled_visibility() {
+        let mut prefetched = IndexMap::new();
+        let mut base = prefetch_model_entry("grok-build", 200_000, ApiBackend::default());
+        base.info.supported_in_api = false;
+        prefetched.insert("grok-build".to_string(), base);
         let raw: toml::Value = toml::from_str(
             r#"
             [model.grok-build]
@@ -11040,7 +11073,7 @@ default = "grok-4.5"
         )
         .unwrap();
         let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
-        let resolved = resolve_model_list(&cfg, None);
+        let resolved = resolve_model_list(&cfg, Some(prefetched));
         let entry = resolved.get("grok-build").expect("grok-build must exist");
         assert!(
             !entry.visible_for_auth(false),
